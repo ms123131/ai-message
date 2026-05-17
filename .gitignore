@@ -9,10 +9,11 @@ build/
 .turbo/
 *.tsbuildinfo
 
-# Env
+# Env (исключение: .env.example в репо)
 .env
 .env.local
 .env.*.local
+!.env.example
 
 # Logs
 *.log
