@@ -99,13 +99,16 @@ SaaS-приложение для анализа коммуникационных
 
 ---
 
-## Фаза 4 — Аутентификация и multi-tenancy
+## Фаза 4 — Аутентификация и multi-tenancy ✅
 
-- [ ] Модель `User`, `Tenant`, `TenantMembership` (role: admin/manager/agent/viewer)
-- [ ] JWT (access 15 мин + refresh httpOnly cookie)
-- [ ] Login/Register endpoints, password hashing (`argon2` или `bcrypt`)
-- [ ] `tenant_id` на всех моделях, Row-Level Security или фильтрация в репозиториях
-- [ ] Frontend: реальный Login, защищённые роуты, refresh-логика в `lib/api.ts`
+- [x] Модели `Tenant`, `User` (role admin/member). `TenantMembership` пока не вводим — один user = один tenant; расширим, когда понадобятся инвайты.
+- [x] JWT HS256 (access 15 мин), refresh в HttpOnly cookie (30 дней)
+- [x] `/api/v1/auth/{register,login,refresh,logout,me}`, argon2 для паролей, open registration с авто-tenant
+- [x] `tenant_id` на `Integration`, фильтрация в репозиториях через JOIN на интеграции
+- [x] Миграция данных в lifespan: осиротевшие интеграции привязываются к первому tenant'у
+- [x] Frontend: `AuthProvider` + `ProtectedRoute`, реальные Login/Register, авто-refresh при 401 в `lib/api.ts`, logout в AppLayout
+- [ ] TODO: TenantMembership + invites для команд (несколько user'ов в одном tenant'е)
+- [ ] TODO: роли manager/agent/viewer (сейчас только admin/member)
 
 ---
 

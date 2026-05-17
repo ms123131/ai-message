@@ -20,6 +20,55 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db.session import Base
 
 
+class Tenant(Base):
+    """Изолированное пространство данных (организация-клиент)."""
+
+    __tablename__ = "tenants"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    users: Mapped[list["User"]] = relationship(
+        back_populates="tenant",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class UserRole(str, Enum):
+    admin = "admin"
+    member = "member"
+
+
+class User(Base):
+    """Пользователь приложения, привязан к одному tenant'у."""
+
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    email: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(String(500), nullable=False)
+    full_name: Mapped[str | None] = mapped_column(String(200))
+    role: Mapped[UserRole] = mapped_column(
+        SAEnum(UserRole, name="user_role"),
+        default=UserRole.member,
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    tenant: Mapped["Tenant"] = relationship(back_populates="users")
+
+
 class IntegrationKind(str, Enum):
     bitrix24 = "bitrix24"
 
@@ -41,6 +90,12 @@ class Integration(Base):
     __tablename__ = "integrations"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=True,  # nullable для миграции существующих записей
+        index=True,
+    )
     kind: Mapped[IntegrationKind] = mapped_column(
         SAEnum(IntegrationKind, name="integration_kind"),
         nullable=False,

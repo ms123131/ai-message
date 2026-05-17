@@ -9,8 +9,10 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.deps import get_current_user
 from app.db import get_session
-from app.db.models import Conversation, ConversationChannel, Message
+from app.db.models import Conversation, ConversationChannel, Integration, Message
+from app.db.models import User as UserModel
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -42,11 +44,14 @@ async def dashboard_stats(
     days: int = Query(14, ge=1, le=180),
     integration_id: str | None = None,
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> DashboardStats:
     now = datetime.now(UTC)
     range_from = now - timedelta(days=days)
 
-    conv_filter = []
+    # Изоляция: только интеграции этого tenant'а.
+    tenant_int_subq = select(Integration.id).where(Integration.tenant_id == user.tenant_id)
+    conv_filter = [Conversation.integration_id.in_(tenant_int_subq)]
     if integration_id:
         conv_filter.append(Conversation.integration_id == integration_id)
 
