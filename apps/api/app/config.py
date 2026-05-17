@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     # В compose web проксирует /webhooks/ → api:8000/api/v1/webhooks/.
     webhook_base_url: str | None = Field(default=None)
 
+    # Поллинг Bitrix24 Open Channels. Bitrix не доставляет OnOpenLineMessageAdd
+    # приложениям без зарегистрированного коннектора, поэтому подтягиваем
+    # сообщения периодическим вызовом im.recent.get → imopenlines.session.history.get.
+    # 0 — отключить поллер.
+    bitrix24_poll_interval_sec: int = 30
+    bitrix24_poll_window_days: int = 1
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
