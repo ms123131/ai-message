@@ -15,6 +15,48 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("ai-message")
 
 
+async def _ensure_schema_patches() -> None:
+    """
+    Идемпотентные DDL-патчи для уже существующих БД. `Base.metadata.create_all`
+    не добавляет новые колонки в существующие таблицы и не дропает старые,
+    поэтому каждое расширение модели требует ручного ALTER TABLE.
+
+    Для SQLite (тесты/локальный dev) ничего не нужно: схема создаётся с нуля.
+    Когда схема стабилизируется — заменим на Alembic.
+    """
+    from sqlalchemy import text
+
+    if engine.dialect.name != "postgresql":
+        return
+
+    statements = [
+        # Фаза 4: tenant_id в integrations (для multi-tenancy).
+        "ALTER TABLE integrations ADD COLUMN IF NOT EXISTS tenant_id VARCHAR(64)",
+        "CREATE INDEX IF NOT EXISTS ix_integrations_tenant_id ON integrations(tenant_id)",
+        """
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'integrations_tenant_id_fkey'
+            ) THEN
+                ALTER TABLE integrations
+                ADD CONSTRAINT integrations_tenant_id_fkey
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE;
+            END IF;
+        END $$;
+        """,
+        # Фаза 4.5: webhook-режим интеграции удалён — чистим старые записи,
+        # иначе SQLAlchemy не сможет загрузить их (значения нет в enum).
+        "DELETE FROM integrations WHERE mode::text = 'webhook'",
+    ]
+    async with engine.begin() as conn:
+        for stmt in statements:
+            try:
+                await conn.execute(text(stmt))
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("schema patch failed (%s): %s", stmt.split()[0], exc)
+
+
 async def _attach_orphan_integrations_to_first_tenant() -> None:
     """
     Одноразовая миграция данных: до фазы 4 интеграции создавались без tenant_id.
@@ -53,6 +95,7 @@ async def lifespan(_: FastAPI):
     # Alembic-миграции добавятся, когда схема стабилизируется.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _ensure_schema_patches()
     await _attach_orphan_integrations_to_first_tenant()
     logger.info("ai-message api v%s started", __version__)
 
