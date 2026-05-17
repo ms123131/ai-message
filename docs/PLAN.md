@@ -74,10 +74,12 @@ SaaS-приложение для анализа коммуникационных
 - [ ] Endpoint `/webhooks/bitrix24`: валидация `auth[application_token]`, dedup по `event_handler_id`
 - [ ] Постановка событий в очередь (на старте — `asyncio.Queue` + воркер в lifespan; позже — Redis/Celery)
 
-### 3.3 Исторический импорт
-- [ ] Команда `app/cli.py import-bitrix24 --integration-id <id> --days 30`
-- [ ] Импорт через `imopenlines.session.list` + `imopenlines.dialog.messages.get` с пагинацией
-- [ ] Прогресс импорта в БД (`ImportJob`)
+### 3.3 Исторический импорт ✅ (MVP)
+- [x] Команда `python -m app.cli import-bitrix24 --integration-id <id> --days 30`
+- [x] Импорт через `im.recent.get` (ONLY_OPENLINES) + `imopenlines.session.history.get` по CHAT_ID, дедуп через unique-индексы
+- [x] Модель `ImportJob` + `POST /api/v1/integrations/{id}/import` (BackgroundTasks) + `GET /import-jobs`
+- [ ] TODO: полная история всех закрытых сессий чата (сейчас берём только последнюю, видимую через history.get)
+- [ ] TODO: качать вложения с Bitrix Disk (сейчас сохраняем только метаданные)
 
 ### 3.4 Модель данных (расширение)
 - [ ] `Conversation` (id, integration_id, external_id, channel, contact_name, status, created_at)

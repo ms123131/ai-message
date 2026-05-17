@@ -214,6 +214,45 @@ class Message(Base):
     )
 
 
+class ImportJobStatus(str, Enum):
+    pending = "pending"
+    running = "running"
+    done = "done"
+    failed = "failed"
+
+
+class ImportJob(Base):
+    """Прогресс исторического импорта диалогов из внешней системы."""
+
+    __tablename__ = "import_jobs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    integration_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("integrations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    status: Mapped[ImportJobStatus] = mapped_column(
+        SAEnum(ImportJobStatus, name="import_job_status"),
+        default=ImportJobStatus.pending,
+        nullable=False,
+    )
+    days: Mapped[int] = mapped_column(default=30, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    processed_sessions: Mapped[int] = mapped_column(default=0, nullable=False)
+    processed_messages: Mapped[int] = mapped_column(default=0, nullable=False)
+    error: Mapped[str | None] = mapped_column(Text)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_import_jobs_integration_created", "integration_id", "created_at"),
+    )
+
+
 # Полнотекстовый поиск по сообщениям — только Postgres.
 # Подключаем generated-колонку `tsv` и GIN-индекс через DDL-хук, чтобы
 # SQLite в тестах работал без TSVECTOR.
