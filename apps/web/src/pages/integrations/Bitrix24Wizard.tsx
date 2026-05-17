@@ -1,11 +1,14 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { useMutation } from "@tanstack/react-query";
 import {
+  AlertTriangle,
   ArrowLeft,
   ArrowRight,
   CheckCircle2,
   ExternalLink,
   KeyRound,
+  Loader2,
   Plug,
   Webhook,
 } from "lucide-react";
@@ -13,90 +16,84 @@ import { PageHeader } from "../../components/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Input } from "../../components/ui/Input";
 import { cn } from "../../lib/cn";
-import {
-  buildAuthorizeUrl,
-  isValidBitrixDomain,
-  newId,
-  normalizeDomain,
-  saveConnection,
-  type Bitrix24Connection,
-} from "../../lib/connections";
+import { api, ApiError } from "../../lib/api";
 
 type Mode = "oauth" | "webhook";
 type Step = 0 | 1 | 2;
 
-const STATE_STORAGE_KEY = "ai-message:b24-pending-oauth";
+const PENDING_KEY = "ai-message:b24-pending-oauth";
+
+function normalizeDomain(input: string): string {
+  return input
+    .trim()
+    .replace(/^https?:\/\//i, "")
+    .replace(/\/.*$/, "")
+    .toLowerCase();
+}
+
+function isValidBitrixDomain(domain: string): boolean {
+  return /^[a-z0-9-]+\.bitrix24\.[a-z.]+$/i.test(domain);
+}
 
 export function Bitrix24Wizard() {
   const navigate = useNavigate();
   const [step, setStep] = useState<Step>(0);
   const [mode, setMode] = useState<Mode>("oauth");
 
-  // Общие поля
   const [label, setLabel] = useState("");
   const [domain, setDomain] = useState("");
-
-  // OAuth
   const [clientId, setClientId] = useState("");
-
-  // Webhook
+  const [clientSecret, setClientSecret] = useState("");
   const [webhookUrl, setWebhookUrl] = useState("");
 
   const normalizedDomain = useMemo(() => normalizeDomain(domain), [domain]);
   const domainValid = isValidBitrixDomain(normalizedDomain);
-
-  const webhookValid = /^https:\/\/[^/]+\.bitrix24\.[a-z.]+\/rest\/\d+\/[a-z0-9]+\/?$/i.test(
-    webhookUrl.trim(),
-  );
+  const webhookValid =
+    /^https:\/\/[^/]+\.bitrix24\.[a-z.]+\/rest\/\d+\/[a-z0-9]+\/?$/i.test(
+      webhookUrl.trim(),
+    );
 
   const step1Valid =
     label.trim().length > 1 &&
     (mode === "oauth"
-      ? domainValid && clientId.trim().length > 5
+      ? domainValid && clientId.trim().length > 5 && clientSecret.trim().length > 5
       : webhookValid);
 
-  function handleConnect() {
+  const createWebhook = useMutation({
+    mutationFn: api.createBitrix24Webhook,
+    onSuccess: () => setStep(2),
+  });
+
+  const createOAuth = useMutation({
+    mutationFn: api.createBitrix24OAuth,
+    onSuccess: (data) => {
+      sessionStorage.setItem(
+        PENDING_KEY,
+        JSON.stringify({ id: data.integration.id }),
+      );
+      window.location.href = data.authorize_url;
+    },
+  });
+
+  const submitting = createOAuth.isPending || createWebhook.isPending;
+  const submitError =
+    (createOAuth.error as ApiError | undefined)?.message ??
+    (createWebhook.error as ApiError | undefined)?.message;
+
+  function handleSubmit() {
     if (mode === "webhook") {
-      const conn: Bitrix24Connection = {
-        id: newId(),
-        kind: "bitrix24",
-        mode: "webhook",
-        domain: normalizedDomain || extractDomainFromWebhook(webhookUrl),
+      createWebhook.mutate({
         label: label.trim(),
-        webhookUrl: webhookUrl.trim().replace(/\/?$/, "/"),
-        status: "connected",
-        createdAt: new Date().toISOString(),
-      };
-      saveConnection(conn);
-      setStep(2);
-      return;
+        webhook_url: webhookUrl.trim().replace(/\/?$/, "/"),
+      });
+    } else {
+      createOAuth.mutate({
+        label: label.trim(),
+        domain: normalizedDomain,
+        client_id: clientId.trim(),
+        client_secret: clientSecret.trim(),
+      });
     }
-
-    // OAuth: сохраняем «черновик» и редиректим на портал
-    const id = newId();
-    const state = `${id}.${Math.random().toString(36).slice(2, 10)}`;
-    const draft: Bitrix24Connection = {
-      id,
-      kind: "bitrix24",
-      mode: "oauth",
-      domain: normalizedDomain,
-      label: label.trim(),
-      clientId: clientId.trim(),
-      status: "pending",
-      createdAt: new Date().toISOString(),
-    };
-    saveConnection(draft);
-    sessionStorage.setItem(
-      STATE_STORAGE_KEY,
-      JSON.stringify({ state, id }),
-    );
-
-    const url = buildAuthorizeUrl({
-      domain: normalizedDomain,
-      clientId: clientId.trim(),
-      state,
-    });
-    window.location.href = url;
   }
 
   return (
@@ -126,7 +123,7 @@ export function Bitrix24Wizard() {
               onClick={() => setMode("oauth")}
               icon={<KeyRound className="h-5 w-5" />}
               title="OAuth-приложение"
-              description="Полные права (CRM, Open Channels, события). Требует регистрации локального приложения на портале Bitrix24."
+              description="Полные права (CRM, Open Channels, события). Требует регистрации локального приложения на портале."
               recommended
             />
             <ModeCard
@@ -134,7 +131,7 @@ export function Bitrix24Wizard() {
               onClick={() => setMode("webhook")}
               icon={<Webhook className="h-5 w-5" />}
               title="Входящий webhook"
-              description="Быстрый старт без публикации приложения. Подходит для тестов и небольших объёмов. Без подписки на события — только опрос API."
+              description="Быстрый старт без публикации приложения. Без подписки на события — только опрос API."
             />
             <div className="flex justify-end pt-2">
               <Button onClick={() => setStep(1)}>
@@ -157,8 +154,8 @@ export function Bitrix24Wizard() {
                   Создайте локальное приложение в разделе{" "}
                   <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">
                     Разработчикам → Другое → Локальное приложение
-                  </code>{" "}
-                  на портале Bitrix24. Укажите callback URL:{" "}
+                  </code>
+                  . Укажите callback URL:{" "}
                   <code className="rounded bg-slate-100 px-1 py-0.5 text-xs">
                     {window.location.origin}/integrations/bitrix24/callback
                   </code>
@@ -197,11 +194,18 @@ export function Bitrix24Wizard() {
                   }
                 />
                 <Input
-                  label="client_id приложения"
+                  label="client_id"
                   placeholder="app.65f3b9e7a2c4d8.12345678"
                   value={clientId}
                   onChange={(e) => setClientId(e.target.value)}
-                  hint="Берётся со страницы локального приложения после сохранения"
+                />
+                <Input
+                  label="client_secret"
+                  type="password"
+                  placeholder="••••••••"
+                  value={clientSecret}
+                  onChange={(e) => setClientSecret(e.target.value)}
+                  hint="Хранится на сервере. Используется для обмена code на access_token."
                 />
               </>
             ) : (
@@ -210,7 +214,6 @@ export function Bitrix24Wizard() {
                 placeholder="https://mycompany.bitrix24.ru/rest/1/xxxxxxxxxxxxxxxx/"
                 value={webhookUrl}
                 onChange={(e) => setWebhookUrl(e.target.value)}
-                hint="Полный URL включая ID пользователя и секретный токен"
                 error={
                   webhookUrl && !webhookValid
                     ? "Ожидается URL вида https://portal.bitrix24.ru/rest/<user>/<token>/"
@@ -219,12 +222,30 @@ export function Bitrix24Wizard() {
               />
             )}
 
+            {submitError && (
+              <div className="flex items-start gap-2 rounded-md bg-rose-50 p-3 text-sm text-rose-700">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <div>{submitError}</div>
+              </div>
+            )}
+
             <div className="flex justify-between pt-2">
-              <Button variant="secondary" onClick={() => setStep(0)}>
+              <Button
+                variant="secondary"
+                onClick={() => setStep(0)}
+                disabled={submitting}
+              >
                 <ArrowLeft className="h-4 w-4" /> Назад
               </Button>
-              <Button onClick={handleConnect} disabled={!step1Valid}>
-                {mode === "oauth" ? (
+              <Button
+                onClick={handleSubmit}
+                disabled={!step1Valid || submitting}
+              >
+                {submitting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" /> Сохранение…
+                  </>
+                ) : mode === "oauth" ? (
                   <>
                     Перейти на портал <ExternalLink className="h-4 w-4" />
                   </>
@@ -246,8 +267,8 @@ export function Bitrix24Wizard() {
             <div className="flex items-start gap-3 rounded-md bg-emerald-50 p-4 text-sm text-emerald-700">
               <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0" />
               <div>
-                Соединение «{label}» добавлено. На следующем этапе backend будет
-                периодически опрашивать API и реагировать на webhook-события.
+                Соединение «{label}» добавлено. Backend будет периодически
+                опрашивать API и принимать webhook-события.
               </div>
             </div>
             <div className="flex justify-end pt-2">
@@ -366,12 +387,4 @@ function ModeCard({
       </div>
     </button>
   );
-}
-
-function extractDomainFromWebhook(url: string): string {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return "";
-  }
 }

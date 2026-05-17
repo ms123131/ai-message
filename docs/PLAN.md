@@ -13,20 +13,34 @@
 - [x] Deploy workflow (заготовка, ждёт выбора хостинга)
 - [ ] Настроить branch protection rules на GitHub (UI): `main` — требовать PR + зелёный CI
 
-## Следующая фаза: 1 — MVP Frontend
+## Фаза 1 — MVP Frontend
 
-- [ ] Layout с боковым меню, темизация (dark/light)
-- [ ] Страница «Подключение Bitrix24» (mock OAuth-wizard)
-- [ ] Inbox: список диалогов (mock-данные)
-- [ ] Просмотр диалога (таймлайн сообщений)
-- [ ] Дашборд: объём, время ответа, sentiment (Recharts)
-- [ ] Аутентификация (mock JWT)
+- [x] Layout с боковым меню
+- [x] Wizard «Подключение Bitrix24» (OAuth + webhook)
+- [x] Callback-страница OAuth
+- [x] Inbox: список диалогов (mock-данные)
+- [x] Дашборд: объём, время ответа, sentiment (Recharts)
+- [ ] Аутентификация (JWT)
+- [ ] Темизация (dark/light)
 
 ## Фаза 2 — Backend MVP
 
-- [ ] Скаффолд `apps/api` (FastAPI)
+- [x] Скаффолд `apps/api` (FastAPI + SQLAlchemy 2.0 async + SQLite)
+- [x] Endpoints: health, integrations CRUD
+- [x] Bitrix24 OAuth: создание подключения + exchange code → tokens
+- [x] Bitrix24 webhook receiver (заглушка, логи)
+- [x] CORS, Dockerfile
+- [x] Pytest + ruff
+- [x] Привязка фронтенда к backend (TanStack Query)
 - [ ] Auth (JWT + multi-tenancy)
-- [ ] Bitrix24 OAuth + webhook receiver
+- [ ] Шифрование client_secret/токенов в БД
+- [ ] Миграция SQLite → Postgres + Alembic-миграции
+- [ ] Bitrix24: подписка на события через event.bind, обработка webhook'ов
 - [ ] Ingestion pipeline (Celery + Redis)
 - [ ] Базовый sentiment-анализ
-- [ ] REST API для inbox/dashboard
+- [ ] Endpoints inbox/dashboard на реальных данных
+
+## Фаза 3 — Деплой
+
+- [ ] docker-compose: api + web + postgres + redis
+- [ ] Доработать `.github/workflows/deploy.yml` под выбранную инфраструктуру
