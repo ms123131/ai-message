@@ -1,0 +1,63 @@
+# docker-compose для ai-message
+#
+# Запуск (production-режим):
+#   docker compose up -d --build
+#
+# Доступ:
+#   web (через nginx): http://localhost:8080
+#   api (напрямую):   http://localhost:8000 (можно закомментировать ports в проде)
+#   postgres:         localhost:5432 (для отладки)
+
+name: ai-message
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-aimessage}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-aimessage}
+      POSTGRES_DB: ${POSTGRES_DB:-aimessage}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-aimessage} -d ${POSTGRES_DB:-aimessage}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Открываем порт только для локальной отладки. В проде закомментировать.
+    ports:
+      - "5432:5432"
+
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aimessage}:${POSTGRES_PASSWORD:-aimessage}@postgres:5432/${POSTGRES_DB:-aimessage}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
+      JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+    # Прямой доступ к API — на время разработки. В проде убрать.
+    ports:
+      - "8000:8000"
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # В прод-сборке фронт ходит на /api (тот же origin, через nginx-прокси).
+        VITE_API_URL: ${VITE_API_URL:-/api}
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+volumes:
+  postgres_data:

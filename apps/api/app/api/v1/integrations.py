@@ -1,0 +1,182 @@
+"""REST API для управления подключениями (Bitrix24 и др.)."""
+
+import secrets
+from datetime import UTC, datetime, timedelta
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db import get_session
+from app.db.models import (
+    Integration,
+    IntegrationKind,
+    IntegrationMode,
+    IntegrationStatus,
+)
+from app.integrations.bitrix24 import build_authorize_url, exchange_code
+from app.integrations.bitrix24.oauth import BitrixOAuthError
+from app.schemas.integration import (
+    Bitrix24OAuthCreate,
+    Bitrix24WebhookCreate,
+    IntegrationCreated,
+    IntegrationOut,
+    OAuthExchange,
+)
+
+router = APIRouter(prefix="/integrations", tags=["integrations"])
+
+
+def _new_id() -> str:
+    return f"b24_{secrets.token_urlsafe(8).lower()}"
+
+
+@router.get("", response_model=list[IntegrationOut])
+async def list_integrations(
+    session: AsyncSession = Depends(get_session),
+) -> list[Integration]:
+    result = await session.execute(
+        select(Integration).order_by(Integration.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+@router.get("/{integration_id}", response_model=IntegrationOut)
+async def get_integration(
+    integration_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> Integration:
+    obj = await session.get(Integration, integration_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    return obj
+
+
+@router.delete("/{integration_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_integration(
+    integration_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    obj = await session.get(Integration, integration_id)
+    if not obj:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    await session.delete(obj)
+    await session.commit()
+
+
+@router.post(
+    "/bitrix24/oauth",
+    response_model=IntegrationCreated,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_bitrix24_oauth(
+    body: Bitrix24OAuthCreate,
+    session: AsyncSession = Depends(get_session),
+) -> IntegrationCreated:
+    """
+    Создаёт «черновик» OAuth-подключения и возвращает URL авторизации портала.
+
+    Фронтенд должен перенаправить пользователя по `authorize_url`. После успешной
+    авторизации портал вернёт пользователя на /integrations/bitrix24/callback
+    с параметрами code/state, которые передаются в /oauth/exchange.
+    """
+    integration = Integration(
+        id=_new_id(),
+        kind=IntegrationKind.bitrix24,
+        mode=IntegrationMode.oauth,
+        label=body.label,
+        domain=body.domain,
+        client_id=body.client_id,
+        client_secret=body.client_secret,
+        status=IntegrationStatus.pending,
+    )
+    session.add(integration)
+    await session.commit()
+    await session.refresh(integration)
+
+    state = f"{integration.id}.{secrets.token_urlsafe(8)}"
+    authorize_url = build_authorize_url(
+        domain=body.domain,
+        client_id=body.client_id,
+        state=state,
+    )
+    return IntegrationCreated(
+        integration=IntegrationOut.model_validate(integration),
+        authorize_url=authorize_url,
+    )
+
+
+@router.post(
+    "/bitrix24/webhook",
+    response_model=IntegrationOut,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_bitrix24_webhook(
+    body: Bitrix24WebhookCreate,
+    session: AsyncSession = Depends(get_session),
+) -> Integration:
+    url = str(body.webhook_url).rstrip("/") + "/"
+    try:
+        domain = url.split("//", 1)[1].split("/", 1)[0]
+    except IndexError:
+        raise HTTPException(status_code=400, detail="Cannot extract domain from webhook URL")
+
+    integration = Integration(
+        id=_new_id(),
+        kind=IntegrationKind.bitrix24,
+        mode=IntegrationMode.webhook,
+        label=body.label,
+        domain=domain,
+        webhook_url=url,
+        status=IntegrationStatus.connected,
+    )
+    session.add(integration)
+    await session.commit()
+    await session.refresh(integration)
+    return integration
+
+
+@router.post(
+    "/bitrix24/oauth/exchange",
+    response_model=IntegrationOut,
+)
+async def exchange_oauth_code(
+    body: OAuthExchange,
+    session: AsyncSession = Depends(get_session),
+) -> Integration:
+    """
+    Обменивает первый авторизационный код на access/refresh токены.
+    Вызывается фронтендом после callback'а от Bitrix24.
+    """
+    integration = await session.get(Integration, body.integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    if integration.mode != IntegrationMode.oauth:
+        raise HTTPException(status_code=400, detail="Not an OAuth integration")
+    if not integration.client_id or not integration.client_secret:
+        raise HTTPException(status_code=400, detail="Missing client_id/client_secret")
+
+    try:
+        tokens = await exchange_code(
+            client_id=integration.client_id,
+            client_secret=integration.client_secret,
+            code=body.code,
+        )
+    except BitrixOAuthError as exc:
+        integration.status = IntegrationStatus.error
+        await session.commit()
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    integration.access_token = tokens.access_token
+    integration.refresh_token = tokens.refresh_token
+    integration.member_id = tokens.member_id or body.member_id
+    integration.scope = tokens.scope or body.scope
+    integration.domain = tokens.domain or body.domain or integration.domain
+    integration.expires_at = datetime.now(UTC) + timedelta(
+        seconds=tokens.expires_in
+    )
+    integration.status = IntegrationStatus.connected
+
+    await session.commit()
+    await session.refresh(integration)
+    return integration

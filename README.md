@@ -23,10 +23,26 @@ ai-message/
 
 Подробный план — см. [`docs/PLAN.md`](./docs/PLAN.md).
 
-## Быстрый старт (frontend)
+## Быстрый старт
+
+### Backend (apps/api)
+
+```bash
+cd apps/api
+python3.12 -m venv .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
+cp .env.example .env
+uvicorn app.main:app --reload --port 8000
+```
+
+API: http://localhost:8000, Swagger: http://localhost:8000/docs.
+
+### Frontend (apps/web)
 
 ```bash
 pnpm install
+cp apps/web/.env.example apps/web/.env  # настроить VITE_API_URL
 pnpm --filter @ai-message/web dev
 ```
 
