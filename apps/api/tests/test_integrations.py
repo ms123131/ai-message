@@ -35,6 +35,22 @@ async def test_list_and_delete(client):
     assert all(i["id"] != integration_id for i in list2.json())
 
 
+def test_portal_from_client_endpoint():
+    from app.api.v1.integrations import _portal_from_client_endpoint
+
+    assert (
+        _portal_from_client_endpoint("https://acme.bitrix24.ru/rest/")
+        == "acme.bitrix24.ru"
+    )
+    assert (
+        _portal_from_client_endpoint("https://b24-xyz.bitrix24.com/rest/")
+        == "b24-xyz.bitrix24.com"
+    )
+    assert _portal_from_client_endpoint(None) is None
+    assert _portal_from_client_endpoint("") is None
+    assert _portal_from_client_endpoint("not a url") is None
+
+
 async def test_create_oauth_returns_authorize_url(client):
     resp = await client.post(
         "/api/v1/integrations/bitrix24/oauth",

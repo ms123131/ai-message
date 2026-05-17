@@ -58,6 +58,19 @@ def _new_id() -> str:
     return f"b24_{secrets.token_urlsafe(8).lower()}"
 
 
+def _portal_from_client_endpoint(client_endpoint: str | None) -> str | None:
+    """
+    client_endpoint вида "https://<portal>.bitrix24.ru/rest/" → "<portal>.bitrix24.ru".
+    """
+    if not client_endpoint:
+        return None
+    try:
+        without_scheme = client_endpoint.split("//", 1)[1]
+        return without_scheme.split("/", 1)[0] or None
+    except (IndexError, AttributeError):
+        return None
+
+
 @router.get("", response_model=list[IntegrationOut])
 async def list_integrations(
     session: AsyncSession = Depends(get_session),
@@ -301,7 +314,11 @@ async def exchange_oauth_code(
     integration.refresh_token = tokens.refresh_token
     integration.member_id = tokens.member_id or body.member_id
     integration.scope = tokens.scope or body.scope
-    integration.domain = tokens.domain or body.domain or integration.domain
+    # В ответе Bitrix24 поле `domain` указывает на auth-сервер (oauth.bitrix24.tech),
+    # а не на портал. Реальный портал — в client_endpoint вида
+    # "https://<portal>.bitrix24.ru/rest/". Берём хост оттуда.
+    portal_domain = _portal_from_client_endpoint(tokens.client_endpoint)
+    integration.domain = portal_domain or body.domain or integration.domain
     integration.expires_at = datetime.now(UTC) + timedelta(
         seconds=tokens.expires_in
     )
