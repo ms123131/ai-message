@@ -59,8 +59,91 @@ export type Integration = {
   updated_at: string;
 };
 
+export type ConversationChannel =
+  | "whatsapp"
+  | "telegram"
+  | "vk"
+  | "instagram"
+  | "facebook"
+  | "livechat"
+  | "email"
+  | "other";
+
+export type ConversationStatus = "open" | "closed";
+export type SenderType = "client" | "agent" | "bot" | "system";
+
+export type Conversation = {
+  id: string;
+  integration_id: string;
+  external_id: string;
+  channel: ConversationChannel;
+  contact_name: string | null;
+  contact_external_id: string | null;
+  status: ConversationStatus;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ConversationListItem = Conversation & {
+  message_count: number;
+  last_message_at: string | null;
+  last_message_preview: string | null;
+};
+
+export type Message = {
+  id: string;
+  conversation_id: string;
+  external_id: string | null;
+  sender_type: SenderType;
+  sender_external_id: string | null;
+  text: string | null;
+  attachments: Array<Record<string, unknown>> | null;
+  sent_at: string;
+};
+
+export type DashboardStats = {
+  range_days: number;
+  range_from: string;
+  range_to: string;
+  total_conversations: number;
+  total_messages: number;
+  open_conversations: number;
+  volume_by_day: Array<{ day: string; count: number }>;
+  by_channel: Array<{
+    channel: ConversationChannel;
+    conversations: number;
+    messages: number;
+  }>;
+};
+
+function qs(params: Record<string, string | number | undefined | null>): string {
+  const usp = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null && v !== "") usp.set(k, String(v));
+  }
+  const s = usp.toString();
+  return s ? `?${s}` : "";
+}
+
 export const api = {
   health: () => request<{ status: string; version: string }>("/api/v1/health"),
+
+  listConversations: (params: {
+    integration_id?: string;
+    channel?: ConversationChannel;
+    limit?: number;
+    offset?: number;
+  } = {}) =>
+    request<ConversationListItem[]>(`/api/v1/conversations${qs(params)}`),
+
+  getConversation: (id: string) =>
+    request<Conversation>(`/api/v1/conversations/${id}`),
+
+  listMessages: (conversationId: string, params: { limit?: number; offset?: number } = {}) =>
+    request<Message[]>(`/api/v1/conversations/${conversationId}/messages${qs(params)}`),
+
+  getDashboardStats: (params: { days?: number; integration_id?: string } = {}) =>
+    request<DashboardStats>(`/api/v1/dashboard/stats${qs(params)}`),
 
   listIntegrations: () => request<Integration[]>("/api/v1/integrations"),
 
