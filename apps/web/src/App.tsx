@@ -5,7 +5,6 @@ import { DashboardPage } from "./pages/DashboardPage";
 import { InboxPage } from "./pages/InboxPage";
 import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { Bitrix24Wizard } from "./pages/integrations/Bitrix24Wizard";
-import { Bitrix24Callback } from "./pages/integrations/Bitrix24Callback";
 import { SettingsPage } from "./pages/SettingsPage";
 import { LoginPage } from "./pages/LoginPage";
 import { RegisterPage } from "./pages/RegisterPage";
@@ -24,10 +23,6 @@ export default function App() {
           <Route
             path="/integrations/bitrix24/new"
             element={<Bitrix24Wizard />}
-          />
-          <Route
-            path="/integrations/bitrix24/callback"
-            element={<Bitrix24Callback />}
           />
           <Route path="/settings" element={<SettingsPage />} />
         </Route>

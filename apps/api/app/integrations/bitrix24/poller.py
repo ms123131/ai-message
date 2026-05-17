@@ -34,6 +34,7 @@ async def _poll_once(window_days: int) -> None:
             select(Integration).where(
                 Integration.mode == IntegrationMode.oauth,
                 Integration.status == IntegrationStatus.connected,
+                Integration.tenant_id.is_not(None),
             )
         )
         integrations = list(rows.scalars().all())

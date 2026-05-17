@@ -1,7 +1,6 @@
-"""REST API для управления подключениями (Bitrix24 и др.)."""
+"""REST API для управления подключениями Bitrix24."""
 
-import secrets
-from datetime import UTC, datetime, timedelta
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
@@ -16,13 +15,10 @@ from app.db.models import (
     ImportJob,
     ImportJobStatus,
     Integration,
-    IntegrationKind,
-    IntegrationMode,
     IntegrationStatus,
 )
 from app.db.models import User as UserModel
 from app.db.session import AsyncSessionLocal
-from app.integrations.bitrix24 import build_authorize_url, exchange_code
 from app.integrations.bitrix24.client import BitrixClient
 from app.integrations.bitrix24.events import (
     SUPPORTED_EVENTS,
@@ -30,13 +26,10 @@ from app.integrations.bitrix24.events import (
     unbind_events,
 )
 from app.integrations.bitrix24.importer import run_import_job
-from app.integrations.bitrix24.oauth import BitrixOAuthError
 from app.schemas.integration import (
-    Bitrix24OAuthCreate,
-    Bitrix24WebhookCreate,
-    IntegrationCreated,
+    Bitrix24ConnectNotInstalled,
+    Bitrix24ConnectRequest,
     IntegrationOut,
-    OAuthExchange,
 )
 
 
@@ -54,24 +47,27 @@ class ImportJobOut(BaseModel):
     error: str | None = None
     created_at: datetime
 
+
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
 
-def _new_id() -> str:
-    return f"b24_{secrets.token_urlsafe(8).lower()}"
+def _normalize_domain(raw: str) -> str:
+    """`https://b24-xyz.bitrix24.ru/` → `b24-xyz.bitrix24.ru` (без схемы и пути)."""
+    s = raw.strip().lower()
+    if s.startswith("http://"):
+        s = s[len("http://") :]
+    elif s.startswith("https://"):
+        s = s[len("https://") :]
+    s = s.split("/", 1)[0]
+    return s.rstrip(".")
 
 
-def _portal_from_client_endpoint(client_endpoint: str | None) -> str | None:
-    """
-    client_endpoint вида "https://<portal>.bitrix24.ru/rest/" → "<portal>.bitrix24.ru".
-    """
-    if not client_endpoint:
-        return None
-    try:
-        without_scheme = client_endpoint.split("//", 1)[1]
-        return without_scheme.split("/", 1)[0] or None
-    except (IndexError, AttributeError):
-        return None
+def _install_url() -> str:
+    settings = get_settings()
+    base = (settings.webhook_base_url or "").rstrip("/")
+    if not base:
+        return "/install/bitrix24"
+    return f"{base}/install/bitrix24"
 
 
 async def _get_owned(
@@ -117,76 +113,62 @@ async def delete_integration(
 
 
 @router.post(
-    "/bitrix24/oauth",
-    response_model=IntegrationCreated,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_bitrix24_oauth(
-    body: Bitrix24OAuthCreate,
-    session: AsyncSession = Depends(get_session),
-    user: UserModel = Depends(get_current_user),
-) -> IntegrationCreated:
-    """
-    Создаёт «черновик» OAuth-подключения и возвращает URL авторизации портала.
-
-    Фронтенд должен перенаправить пользователя по `authorize_url`. После успешной
-    авторизации портал вернёт пользователя на /integrations/bitrix24/callback
-    с параметрами code/state, которые передаются в /oauth/exchange.
-    """
-    integration = Integration(
-        id=_new_id(),
-        tenant_id=user.tenant_id,
-        kind=IntegrationKind.bitrix24,
-        mode=IntegrationMode.oauth,
-        label=body.label,
-        domain=body.domain,
-        client_id=body.client_id,
-        client_secret=body.client_secret,
-        status=IntegrationStatus.pending,
-    )
-    session.add(integration)
-    await session.commit()
-    await session.refresh(integration)
-
-    state = f"{integration.id}.{secrets.token_urlsafe(8)}"
-    authorize_url = build_authorize_url(
-        domain=body.domain,
-        client_id=body.client_id,
-        state=state,
-    )
-    return IntegrationCreated(
-        integration=IntegrationOut.model_validate(integration),
-        authorize_url=authorize_url,
-    )
-
-
-@router.post(
-    "/bitrix24/webhook",
+    "/bitrix24/connect",
     response_model=IntegrationOut,
-    status_code=status.HTTP_201_CREATED,
+    responses={404: {"model": Bitrix24ConnectNotInstalled}},
 )
-async def create_bitrix24_webhook(
-    body: Bitrix24WebhookCreate,
+async def connect_bitrix24(
+    body: Bitrix24ConnectRequest,
     session: AsyncSession = Depends(get_session),
     user: UserModel = Depends(get_current_user),
 ) -> Integration:
-    url = str(body.webhook_url).rstrip("/") + "/"
-    try:
-        domain = url.split("//", 1)[1].split("/", 1)[0]
-    except IndexError:
-        raise HTTPException(status_code=400, detail="Cannot extract domain from webhook URL")
+    """
+    Подключение Bitrix24-портала по доменному имени.
 
-    integration = Integration(
-        id=_new_id(),
-        tenant_id=user.tenant_id,
-        kind=IntegrationKind.bitrix24,
-        mode=IntegrationMode.webhook,
-        label=body.label,
-        domain=domain,
-        webhook_url=url,
-        status=IntegrationStatus.connected,
-    )
-    session.add(integration)
+    Сценарий:
+    1. Клиент устанавливает наше тиражное приложение на свой портал;
+       при установке Bitrix24 шлёт токены в `/install/bitrix24`,
+       мы их сохраняем в Integration (без tenant_id — pending).
+    2. Клиент возвращается в наш UI и сообщает доменное имя портала.
+       Этот endpoint ищет Integration по домену и закрепляет за tenant'ом.
+
+    Если интеграции нет — возвращаем 404 с инструкцией поставить приложение.
+    """
+    domain = _normalize_domain(body.domain)
+    if not domain:
+        raise HTTPException(status_code=400, detail="Domain is required")
+
+    integration = (
+        await session.execute(
+            select(Integration).where(Integration.domain == domain).limit(1)
+        )
+    ).scalar_one_or_none()
+
+    if not integration:
+        # Хочется 404 с тегом not_installed, а не «не найдено».
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "status": "not_installed",
+                "domain": domain,
+                "install_instructions_url": _install_url(),
+                "message": (
+                    "Приложение ai-message не установлено на этом портале. "
+                    "Установите его из Bitrix24 Marketplace, затем повторите подключение."
+                ),
+            },
+        )
+
+    if integration.tenant_id and integration.tenant_id != user.tenant_id:
+        raise HTTPException(
+            status_code=409,
+            detail="Этот портал уже подключён к другому рабочему пространству",
+        )
+
+    integration.tenant_id = user.tenant_id
+    if body.label:
+        integration.label = body.label
+    integration.status = IntegrationStatus.connected
     await session.commit()
     await session.refresh(integration)
     return integration
@@ -209,19 +191,9 @@ async def subscribe_events(
     session: AsyncSession = Depends(get_session),
     user: UserModel = Depends(get_current_user),
 ) -> dict:
-    """
-    Регистрирует обработчик событий Open Channels через `event.bind`.
-
-    Дёргается вручную после того, как `WEBHOOK_BASE_URL` указывает на доступный
-    извне адрес (production или ngrok). Возвращает результат каждого вызова.
-    """
     integration = await _get_owned(session, integration_id, user)
-
     handler = _handler_url()
     async with BitrixClient(integration, session) as client:
-        # app.info вернёт INSTALLED: true/false — если false, события из B24
-        # приходить не будут, пока на странице настройки приложения не вызовут
-        # BX24.installFinish() (это JS-функция, через REST её вызвать нельзя).
         try:
             app_info: Any = await client.call("app.info")
         except Exception as exc:  # noqa: BLE001
@@ -236,8 +208,21 @@ async def subscribe_events(
     }
 
 
+@router.post("/{integration_id}/events/unsubscribe")
+async def unsubscribe_events(
+    integration_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
+) -> dict:
+    integration = await _get_owned(session, integration_id, user)
+    handler = _handler_url()
+    async with BitrixClient(integration, session) as client:
+        results = await unbind_events(client, handler)
+    await session.commit()
+    return {"handler": handler, "events": SUPPORTED_EVENTS, "results": results}
+
+
 async def _run_import_background(integration_id: str, job_id: str) -> None:
-    """Запускает импорт в своей сессии БД — не зависим от request-сессии."""
     async with AsyncSessionLocal() as session:
         job = await session.get(ImportJob, job_id)
         integration = await session.get(Integration, integration_id)
@@ -259,8 +244,9 @@ async def trigger_import(
     session: AsyncSession = Depends(get_session),
     user: UserModel = Depends(get_current_user),
 ) -> ImportJob:
-    integration = await _get_owned(session, integration_id, user)
+    import secrets
 
+    integration = await _get_owned(session, integration_id, user)
     job = ImportJob(
         id=f"imp_{secrets.token_urlsafe(8).lower()}",
         integration_id=integration.id,
@@ -269,7 +255,6 @@ async def trigger_import(
     session.add(job)
     await session.commit()
     await session.refresh(job)
-
     background.add_task(_run_import_background, integration.id, job.id)
     return job
 
@@ -289,85 +274,3 @@ async def list_import_jobs(
         .limit(limit)
     )
     return list(result.scalars().all())
-
-
-@router.post("/{integration_id}/events/unsubscribe")
-async def unsubscribe_events(
-    integration_id: str,
-    session: AsyncSession = Depends(get_session),
-    user: UserModel = Depends(get_current_user),
-) -> dict:
-    integration = await _get_owned(session, integration_id, user)
-
-    handler = _handler_url()
-    async with BitrixClient(integration, session) as client:
-        results = await unbind_events(client, handler)
-    await session.commit()
-    return {"handler": handler, "events": SUPPORTED_EVENTS, "results": results}
-
-
-@router.post(
-    "/bitrix24/oauth/exchange",
-    response_model=IntegrationOut,
-)
-async def exchange_oauth_code(
-    body: OAuthExchange,
-    session: AsyncSession = Depends(get_session),
-    user: UserModel = Depends(get_current_user),
-) -> Integration:
-    """
-    Обменивает первый авторизационный код на access/refresh токены.
-    Вызывается фронтендом после callback'а от Bitrix24.
-    """
-    integration = await _get_owned(session, body.integration_id, user)
-    if integration.mode != IntegrationMode.oauth:
-        raise HTTPException(status_code=400, detail="Not an OAuth integration")
-    if not integration.client_id or not integration.client_secret:
-        raise HTTPException(status_code=400, detail="Missing client_id/client_secret")
-
-    try:
-        tokens = await exchange_code(
-            client_id=integration.client_id,
-            client_secret=integration.client_secret,
-            code=body.code,
-        )
-    except BitrixOAuthError as exc:
-        integration.status = IntegrationStatus.error
-        await session.commit()
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-    integration.access_token = tokens.access_token
-    integration.refresh_token = tokens.refresh_token
-    integration.member_id = tokens.member_id or body.member_id
-    integration.scope = tokens.scope or body.scope
-    # В ответе Bitrix24 поле `domain` указывает на auth-сервер (oauth.bitrix24.tech),
-    # а не на портал. Реальный портал — в client_endpoint вида
-    # "https://<portal>.bitrix24.ru/rest/". Берём хост оттуда.
-    portal_domain = _portal_from_client_endpoint(tokens.client_endpoint)
-    integration.domain = portal_domain or body.domain or integration.domain
-    integration.expires_at = datetime.now(UTC) + timedelta(
-        seconds=tokens.expires_in
-    )
-    integration.status = IntegrationStatus.connected
-
-    await session.commit()
-    await session.refresh(integration)
-
-    # Сразу подписываемся на события, чтобы пользователь не дёргал руками.
-    # ВАЖНО: если приложение в Bitrix24 не помечено «Использует только API»,
-    # события всё равно не пойдут, пока на странице установки приложения
-    # не вызовут BX24.installFinish() (это JS, не REST).
-    import logging
-
-    log = logging.getLogger(__name__)
-    try:
-        async with BitrixClient(integration, session) as bx:
-            try:
-                await bind_events(bx, _handler_url())
-            except Exception as exc:  # noqa: BLE001
-                log.warning("auto bind_events failed: %s", exc)
-        await session.commit()
-    except Exception as exc:  # noqa: BLE001
-        log.warning("post-exchange onboarding failed: %s", exc)
-
-    return integration

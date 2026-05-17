@@ -52,11 +52,12 @@ async def _make_integration(tenant_id: str | None = None) -> str:
             id="intg_imp",
             tenant_id=tenant_id,
             kind=IntegrationKind.bitrix24,
-            mode=IntegrationMode.webhook,
+            mode=IntegrationMode.oauth,
             label="Imp",
             domain="portal.bitrix24.ru",
             status=IntegrationStatus.connected,
-            webhook_url="https://portal.bitrix24.ru/rest/1/abc",
+            access_token="access-x",
+            refresh_token="refresh-x",
         )
         session.add(integration)
         await session.commit()

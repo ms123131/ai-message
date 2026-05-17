@@ -156,6 +156,25 @@ SaaS-приложение для анализа коммуникационных
 
 ---
 
+## Фаза 4.5 — Wazzup-style подключение Bitrix24 ✅
+
+Цель: клиент НЕ вписывает client_id/secret вручную. Ставит наше тиражное
+приложение → возвращается в наш UI → вводит домен → готово.
+
+- [x] Глобальные `BITRIX24_APP_CLIENT_ID/SECRET` в `.env` (одно приложение
+  на всех клиентов)
+- [x] `/install/bitrix24` принимает POST от B24, сохраняет токены в Integration
+  (tenant_id=NULL — pending claim), вызывает `BX24.installFinish()` в iframe
+- [x] `POST /integrations/bitrix24/connect` (domain, label?) — находит pending
+  Integration по домену и привязывает к tenant. 404 с `status: not_installed`
+  если приложение не установлено. 409 если уже привязано к другому tenant.
+- [x] Удалён webhook-режим интеграции: модель, endpoint, UI, тесты (приёмник
+  событий `/webhooks/bitrix24` остался)
+- [x] Bitrix24Wizard упрощён: только домен + инструкция «поставьте приложение»
+- [x] Favicon SVG
+- [ ] TODO: вынести client_id/secret в таблицу Bitrix24App при появлении
+  нескольких приложений (.ru/.com или разные тарифы)
+
 ## Известные технические долги
 
 - [ ] `Base.metadata.create_all` в `lifespan` — заменить на Alembic
