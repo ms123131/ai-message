@@ -3,18 +3,22 @@
 import secrets
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from pydantic import BaseModel, ConfigDict
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
 from app.db import get_session
 from app.db.models import (
+    ImportJob,
+    ImportJobStatus,
     Integration,
     IntegrationKind,
     IntegrationMode,
     IntegrationStatus,
 )
+from app.db.session import AsyncSessionLocal
 from app.integrations.bitrix24 import build_authorize_url, exchange_code
 from app.integrations.bitrix24.client import BitrixClient
 from app.integrations.bitrix24.events import (
@@ -22,6 +26,7 @@ from app.integrations.bitrix24.events import (
     bind_events,
     unbind_events,
 )
+from app.integrations.bitrix24.importer import run_import_job
 from app.integrations.bitrix24.oauth import BitrixOAuthError
 from app.schemas.integration import (
     Bitrix24OAuthCreate,
@@ -30,6 +35,21 @@ from app.schemas.integration import (
     IntegrationOut,
     OAuthExchange,
 )
+
+
+class ImportJobOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: str
+    integration_id: str
+    status: ImportJobStatus
+    days: int
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    processed_sessions: int
+    processed_messages: int
+    error: str | None = None
+    created_at: datetime
 
 router = APIRouter(prefix="/integrations", tags=["integrations"])
 
@@ -174,6 +194,60 @@ async def subscribe_events(
         results = await bind_events(client, handler)
     await session.commit()
     return {"handler": handler, "events": SUPPORTED_EVENTS, "results": results}
+
+
+async def _run_import_background(integration_id: str, job_id: str) -> None:
+    """Запускает импорт в своей сессии БД — не зависим от request-сессии."""
+    async with AsyncSessionLocal() as session:
+        job = await session.get(ImportJob, job_id)
+        integration = await session.get(Integration, integration_id)
+        if not job or not integration:
+            return
+        async with BitrixClient(integration, session) as client:
+            await run_import_job(client, session, job, integration)
+
+
+@router.post(
+    "/{integration_id}/import",
+    response_model=ImportJobOut,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def trigger_import(
+    integration_id: str,
+    background: BackgroundTasks,
+    days: int = Query(30, ge=1, le=180),
+    session: AsyncSession = Depends(get_session),
+) -> ImportJob:
+    integration = await session.get(Integration, integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    job = ImportJob(
+        id=f"imp_{secrets.token_urlsafe(8).lower()}",
+        integration_id=integration.id,
+        days=days,
+    )
+    session.add(job)
+    await session.commit()
+    await session.refresh(job)
+
+    background.add_task(_run_import_background, integration.id, job.id)
+    return job
+
+
+@router.get("/{integration_id}/import-jobs", response_model=list[ImportJobOut])
+async def list_import_jobs(
+    integration_id: str,
+    limit: int = Query(20, ge=1, le=100),
+    session: AsyncSession = Depends(get_session),
+) -> list[ImportJob]:
+    result = await session.execute(
+        select(ImportJob)
+        .where(ImportJob.integration_id == integration_id)
+        .order_by(desc(ImportJob.created_at))
+        .limit(limit)
+    )
+    return list(result.scalars().all())
 
 
 @router.post("/{integration_id}/events/unsubscribe")
