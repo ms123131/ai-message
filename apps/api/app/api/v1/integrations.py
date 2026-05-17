@@ -7,6 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db import get_session
 from app.db.models import (
     Integration,
@@ -15,6 +16,12 @@ from app.db.models import (
     IntegrationStatus,
 )
 from app.integrations.bitrix24 import build_authorize_url, exchange_code
+from app.integrations.bitrix24.client import BitrixClient
+from app.integrations.bitrix24.events import (
+    SUPPORTED_EVENTS,
+    bind_events,
+    unbind_events,
+)
 from app.integrations.bitrix24.oauth import BitrixOAuthError
 from app.schemas.integration import (
     Bitrix24OAuthCreate,
@@ -134,6 +141,55 @@ async def create_bitrix24_webhook(
     await session.commit()
     await session.refresh(integration)
     return integration
+
+
+def _handler_url() -> str:
+    settings = get_settings()
+    base = (settings.webhook_base_url or "").rstrip("/")
+    if not base:
+        raise HTTPException(
+            status_code=400,
+            detail="WEBHOOK_BASE_URL not configured — задайте публичный URL в .env",
+        )
+    return f"{base}/webhooks/bitrix24"
+
+
+@router.post("/{integration_id}/events/subscribe")
+async def subscribe_events(
+    integration_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    """
+    Регистрирует обработчик событий Open Channels через `event.bind`.
+
+    Дёргается вручную после того, как `WEBHOOK_BASE_URL` указывает на доступный
+    извне адрес (production или ngrok). Возвращает результат каждого вызова.
+    """
+    integration = await session.get(Integration, integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    handler = _handler_url()
+    async with BitrixClient(integration, session) as client:
+        results = await bind_events(client, handler)
+    await session.commit()
+    return {"handler": handler, "events": SUPPORTED_EVENTS, "results": results}
+
+
+@router.post("/{integration_id}/events/unsubscribe")
+async def unsubscribe_events(
+    integration_id: str,
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    integration = await session.get(Integration, integration_id)
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    handler = _handler_url()
+    async with BitrixClient(integration, session) as client:
+        results = await unbind_events(client, handler)
+    await session.commit()
+    return {"handler": handler, "events": SUPPORTED_EVENTS, "results": results}
 
 
 @router.post(
