@@ -2,6 +2,7 @@
 
 import secrets
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
@@ -204,9 +205,19 @@ async def subscribe_events(
 
     handler = _handler_url()
     async with BitrixClient(integration, session) as client:
+        # Закрываем установку приложения — без этого B24 не отправляет события.
+        try:
+            install_result: Any = await client.call("app.installation.finish")
+        except Exception as exc:  # noqa: BLE001
+            install_result = {"error": str(exc)}
         results = await bind_events(client, handler)
     await session.commit()
-    return {"handler": handler, "events": SUPPORTED_EVENTS, "results": results}
+    return {
+        "handler": handler,
+        "events": SUPPORTED_EVENTS,
+        "installation_finish": install_result,
+        "results": results,
+    }
 
 
 async def _run_import_background(integration_id: str, job_id: str) -> None:
@@ -326,4 +337,27 @@ async def exchange_oauth_code(
 
     await session.commit()
     await session.refresh(integration)
+
+    # Завершаем установку приложения и сразу подписываемся на события.
+    # Без app.installation.finish Bitrix24 не шлёт события приложению — это
+    # явно прописано в документации OnOpenLineMessageAdd.
+    # Ошибки логируем, но не валим exchange: интеграция уже сохранена,
+    # подписку всегда можно повторить ручным /events/subscribe.
+    import logging
+
+    log = logging.getLogger(__name__)
+    try:
+        async with BitrixClient(integration, session) as bx:
+            try:
+                await bx.call("app.installation.finish")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("app.installation.finish failed: %s", exc)
+            try:
+                await bind_events(bx, _handler_url())
+            except Exception as exc:  # noqa: BLE001
+                log.warning("auto bind_events failed: %s", exc)
+        await session.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("post-exchange onboarding failed: %s", exc)
+
     return integration
