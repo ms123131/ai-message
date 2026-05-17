@@ -20,10 +20,11 @@ from app.db.models import (
 from app.db.session import AsyncSessionLocal
 
 
-async def _seed() -> str:
+async def _seed(tenant_id: str | None = None) -> str:
     async with AsyncSessionLocal() as session:
         integration = Integration(
             id="intg_dash",
+            tenant_id=tenant_id,
             kind=IntegrationKind.bitrix24,
             mode=IntegrationMode.oauth,
             label="Dash",
@@ -77,8 +78,8 @@ async def _seed() -> str:
 
 
 @pytest.mark.asyncio
-async def test_stats_returns_aggregates(client):
-    await _seed()
+async def test_stats_returns_aggregates(client, auth_tenant_id):
+    await _seed(tenant_id=auth_tenant_id)
     resp = await client.get("/api/v1/dashboard/stats?days=14")
     assert resp.status_code == 200
     data = resp.json()
@@ -92,8 +93,8 @@ async def test_stats_returns_aggregates(client):
 
 
 @pytest.mark.asyncio
-async def test_stats_filter_by_integration(client):
-    integration_id = await _seed()
+async def test_stats_filter_by_integration(client, auth_tenant_id):
+    integration_id = await _seed(tenant_id=auth_tenant_id)
     resp = await client.get(
         f"/api/v1/dashboard/stats?integration_id={integration_id}"
     )

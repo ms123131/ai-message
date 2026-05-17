@@ -6,8 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.deps import get_current_user
 from app.db import get_session
-from app.db.models import Conversation, ConversationChannel, Message
+from app.db.models import Conversation, ConversationChannel, Integration, Message
+from app.db.models import User as UserModel
 from app.schemas.conversation import (
     ConversationListItem,
     ConversationOut,
@@ -24,6 +26,7 @@ async def list_conversations(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> list[ConversationListItem]:
     last_msg = (
         select(
@@ -36,7 +39,9 @@ async def list_conversations(
     )
     stmt = (
         select(Conversation, last_msg.c.cnt, last_msg.c.last_at)
+        .join(Integration, Integration.id == Conversation.integration_id)
         .outerjoin(last_msg, last_msg.c.conv_id == Conversation.id)
+        .where(Integration.tenant_id == user.tenant_id)
         .order_by(desc(func.coalesce(last_msg.c.last_at, Conversation.created_at)))
         .limit(limit)
         .offset(offset)
@@ -74,15 +79,25 @@ async def list_conversations(
     return items
 
 
-@router.get("/{conversation_id}", response_model=ConversationOut)
-async def get_conversation(
-    conversation_id: str,
-    session: AsyncSession = Depends(get_session),
+async def _get_owned_conv(
+    session: AsyncSession, conversation_id: str, user: UserModel
 ) -> Conversation:
     obj = await session.get(Conversation, conversation_id)
     if not obj:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    integration = await session.get(Integration, obj.integration_id)
+    if not integration or integration.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
     return obj
+
+
+@router.get("/{conversation_id}", response_model=ConversationOut)
+async def get_conversation(
+    conversation_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
+) -> Conversation:
+    return await _get_owned_conv(session, conversation_id, user)
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageOut])
@@ -91,10 +106,9 @@ async def list_messages(
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> list[Message]:
-    conv = await session.get(Conversation, conversation_id)
-    if not conv:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Conversation not found")
+    await _get_owned_conv(session, conversation_id, user)
     result = await session.execute(
         select(Message)
         .where(Message.conversation_id == conversation_id)

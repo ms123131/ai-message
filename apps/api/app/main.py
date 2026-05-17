@@ -15,12 +15,45 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger("ai-message")
 
 
+async def _attach_orphan_integrations_to_first_tenant() -> None:
+    """
+    Одноразовая миграция данных: до фазы 4 интеграции создавались без tenant_id.
+    Привязываем их к первому существующему tenant'у, если он уже создан
+    (через регистрацию первого пользователя). Если ни одного tenant ещё нет —
+    оставляем как есть; миграция произойдёт при следующем старте после регистрации.
+    """
+    from sqlalchemy import select, update
+
+    from app.db.models import Integration, Tenant
+    from app.db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        first_tenant = (
+            await session.execute(select(Tenant).order_by(Tenant.created_at).limit(1))
+        ).scalar_one_or_none()
+        if not first_tenant:
+            return
+        result = await session.execute(
+            update(Integration)
+            .where(Integration.tenant_id.is_(None))
+            .values(tenant_id=first_tenant.id)
+        )
+        if result.rowcount:
+            logger.info(
+                "migrated %d orphan integration(s) to tenant=%s",
+                result.rowcount,
+                first_tenant.id,
+            )
+        await session.commit()
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # На старте MVP создаём таблицы напрямую через SQLAlchemy.
     # Alembic-миграции добавятся, когда схема стабилизируется.
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    await _attach_orphan_integrations_to_first_tenant()
     logger.info("ai-message api v%s started", __version__)
 
     poller_task = asyncio.create_task(run_bitrix24_poller(), name="bitrix24-poller")

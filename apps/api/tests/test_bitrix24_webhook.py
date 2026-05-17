@@ -53,10 +53,14 @@ def _form_payload(
     }
 
 
-async def _make_integration(member_id: str = "member-portal-1") -> str:
+async def _make_integration(
+    member_id: str = "member-portal-1",
+    tenant_id: str | None = None,
+) -> str:
     async with AsyncSessionLocal() as session:
         integration = Integration(
             id="intg_portal_1",
+            tenant_id=tenant_id,
             kind=IntegrationKind.bitrix24,
             mode=IntegrationMode.oauth,
             label="Test",
@@ -159,8 +163,8 @@ async def test_webhook_ignores_unsupported_event(client):
 
 
 @pytest.mark.asyncio
-async def test_read_api_lists_conversations_and_messages(client):
-    await _make_integration()
+async def test_read_api_lists_conversations_and_messages(client, auth_tenant_id):
+    await _make_integration(tenant_id=auth_tenant_id)
     await client.post("/api/v1/webhooks/bitrix24", data=_form_payload(message_id="m1"))
     await client.post(
         "/api/v1/webhooks/bitrix24",

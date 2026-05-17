@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.auth.deps import get_current_user
 from app.config import get_settings
 from app.db import get_session
 from app.db.models import (
@@ -19,6 +20,7 @@ from app.db.models import (
     IntegrationMode,
     IntegrationStatus,
 )
+from app.db.models import User as UserModel
 from app.db.session import AsyncSessionLocal
 from app.integrations.bitrix24 import build_authorize_url, exchange_code
 from app.integrations.bitrix24.client import BitrixClient
@@ -72,12 +74,24 @@ def _portal_from_client_endpoint(client_endpoint: str | None) -> str | None:
         return None
 
 
+async def _get_owned(
+    session: AsyncSession, integration_id: str, user: UserModel
+) -> Integration:
+    obj = await session.get(Integration, integration_id)
+    if not obj or obj.tenant_id != user.tenant_id:
+        raise HTTPException(status_code=404, detail="Integration not found")
+    return obj
+
+
 @router.get("", response_model=list[IntegrationOut])
 async def list_integrations(
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> list[Integration]:
     result = await session.execute(
-        select(Integration).order_by(Integration.created_at.desc())
+        select(Integration)
+        .where(Integration.tenant_id == user.tenant_id)
+        .order_by(Integration.created_at.desc())
     )
     return list(result.scalars().all())
 
@@ -86,21 +100,18 @@ async def list_integrations(
 async def get_integration(
     integration_id: str,
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> Integration:
-    obj = await session.get(Integration, integration_id)
-    if not obj:
-        raise HTTPException(status_code=404, detail="Integration not found")
-    return obj
+    return await _get_owned(session, integration_id, user)
 
 
 @router.delete("/{integration_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_integration(
     integration_id: str,
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> None:
-    obj = await session.get(Integration, integration_id)
-    if not obj:
-        raise HTTPException(status_code=404, detail="Integration not found")
+    obj = await _get_owned(session, integration_id, user)
     await session.delete(obj)
     await session.commit()
 
@@ -113,6 +124,7 @@ async def delete_integration(
 async def create_bitrix24_oauth(
     body: Bitrix24OAuthCreate,
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> IntegrationCreated:
     """
     Создаёт «черновик» OAuth-подключения и возвращает URL авторизации портала.
@@ -123,6 +135,7 @@ async def create_bitrix24_oauth(
     """
     integration = Integration(
         id=_new_id(),
+        tenant_id=user.tenant_id,
         kind=IntegrationKind.bitrix24,
         mode=IntegrationMode.oauth,
         label=body.label,
@@ -155,6 +168,7 @@ async def create_bitrix24_oauth(
 async def create_bitrix24_webhook(
     body: Bitrix24WebhookCreate,
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> Integration:
     url = str(body.webhook_url).rstrip("/") + "/"
     try:
@@ -164,6 +178,7 @@ async def create_bitrix24_webhook(
 
     integration = Integration(
         id=_new_id(),
+        tenant_id=user.tenant_id,
         kind=IntegrationKind.bitrix24,
         mode=IntegrationMode.webhook,
         label=body.label,
@@ -192,6 +207,7 @@ def _handler_url() -> str:
 async def subscribe_events(
     integration_id: str,
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> dict:
     """
     Регистрирует обработчик событий Open Channels через `event.bind`.
@@ -199,9 +215,7 @@ async def subscribe_events(
     Дёргается вручную после того, как `WEBHOOK_BASE_URL` указывает на доступный
     извне адрес (production или ngrok). Возвращает результат каждого вызова.
     """
-    integration = await session.get(Integration, integration_id)
-    if not integration:
-        raise HTTPException(status_code=404, detail="Integration not found")
+    integration = await _get_owned(session, integration_id, user)
 
     handler = _handler_url()
     async with BitrixClient(integration, session) as client:
@@ -243,10 +257,9 @@ async def trigger_import(
     background: BackgroundTasks,
     days: int = Query(30, ge=1, le=180),
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> ImportJob:
-    integration = await session.get(Integration, integration_id)
-    if not integration:
-        raise HTTPException(status_code=404, detail="Integration not found")
+    integration = await _get_owned(session, integration_id, user)
 
     job = ImportJob(
         id=f"imp_{secrets.token_urlsafe(8).lower()}",
@@ -266,7 +279,9 @@ async def list_import_jobs(
     integration_id: str,
     limit: int = Query(20, ge=1, le=100),
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> list[ImportJob]:
+    await _get_owned(session, integration_id, user)
     result = await session.execute(
         select(ImportJob)
         .where(ImportJob.integration_id == integration_id)
@@ -280,10 +295,9 @@ async def list_import_jobs(
 async def unsubscribe_events(
     integration_id: str,
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> dict:
-    integration = await session.get(Integration, integration_id)
-    if not integration:
-        raise HTTPException(status_code=404, detail="Integration not found")
+    integration = await _get_owned(session, integration_id, user)
 
     handler = _handler_url()
     async with BitrixClient(integration, session) as client:
@@ -299,14 +313,13 @@ async def unsubscribe_events(
 async def exchange_oauth_code(
     body: OAuthExchange,
     session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
 ) -> Integration:
     """
     Обменивает первый авторизационный код на access/refresh токены.
     Вызывается фронтендом после callback'а от Bitrix24.
     """
-    integration = await session.get(Integration, body.integration_id)
-    if not integration:
-        raise HTTPException(status_code=404, detail="Integration not found")
+    integration = await _get_owned(session, body.integration_id, user)
     if integration.mode != IntegrationMode.oauth:
         raise HTTPException(status_code=400, detail="Not an OAuth integration")
     if not integration.client_id or not integration.client_secret:

@@ -46,10 +46,11 @@ def _now_iso(offset_days: int = 0) -> str:
     return (datetime.now(UTC) - timedelta(days=offset_days)).isoformat()
 
 
-async def _make_integration() -> str:
+async def _make_integration(tenant_id: str | None = None) -> str:
     async with AsyncSessionLocal() as session:
         integration = Integration(
             id="intg_imp",
+            tenant_id=tenant_id,
             kind=IntegrationKind.bitrix24,
             mode=IntegrationMode.webhook,
             label="Imp",
@@ -209,9 +210,9 @@ async def test_run_import_job_marks_done(client):  # noqa: ARG001
 
 
 @pytest.mark.asyncio
-async def test_trigger_import_endpoint_creates_job(client):
+async def test_trigger_import_endpoint_creates_job(client, auth_tenant_id):
     # Создаём интеграцию напрямую, чтобы не зависеть от OAuth-flow.
-    integration_id = await _make_integration()
+    integration_id = await _make_integration(tenant_id=auth_tenant_id)
 
     resp = await client.post(
         f"/api/v1/integrations/{integration_id}/import?days=5"
