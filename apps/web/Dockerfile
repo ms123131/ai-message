@@ -7,11 +7,15 @@ WORKDIR /repo
 # Включаем pnpm через corepack
 RUN corepack enable && corepack prepare pnpm@10.33.4 --activate
 
-# Копируем манифесты для кэширования слоя зависимостей
+# Копируем манифесты для кэширования слоя зависимостей.
+# Внимание: pnpm 10 с `--filter <pkg>...` под --frozen-lockfile не всегда
+# раскладывает devDependencies workspace-пакета в его node_modules
+# (tsc, vite не находятся при сборке). Поэтому ставим всё workspace целиком —
+# у нас в pnpm-workspace только apps/web имеет node-зависимости, оверхед минимален.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/
 
-RUN pnpm install --frozen-lockfile --filter @ai-message/web...
+RUN pnpm install --frozen-lockfile
 
 # Копируем исходники и собираем
 COPY apps/web/ apps/web/
