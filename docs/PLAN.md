@@ -7,8 +7,11 @@
 - [x] Создать монорепо
 - [x] Скаффолд `apps/web` (Vite + React + TS + Tailwind)
 - [ ] Базовые роуты: Login, Inbox, Dashboard, Settings
-- [ ] Подключение к GitHub (origin)
-- [ ] CI: GitHub Actions (lint + typecheck + build)
+- [x] Подключение к GitHub (origin)
+- [x] Ветки `main` и `dev`
+- [x] CI: GitHub Actions (typecheck + build) на push/PR в `main` и `dev`
+- [x] Deploy workflow (заготовка, ждёт выбора хостинга)
+- [ ] Настроить branch protection rules на GitHub (UI): `main` — требовать PR + зелёный CI
 
 ## Следующая фаза: 1 — MVP Frontend
 

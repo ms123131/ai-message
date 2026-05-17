@@ -1,0 +1,59 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build production bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm --filter @ai-message/web build
+
+      - name: Upload production artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-production-${{ github.sha }}
+          path: apps/web/dist
+          retention-days: 30
+
+  # TODO: добавить deploy-job когда определимся с хостингом
+  # (S3+CloudFront / Yandex Object Storage / k8s / nginx-сервер).
+  # Заглушка ниже — пример для Yandex Object Storage:
+  #
+  # deploy:
+  #   needs: build
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/download-artifact@v4
+  #       with:
+  #         name: web-production-${{ github.sha }}
+  #         path: dist
+  #     - name: Sync to Yandex Object Storage
+  #       env:
+  #         AWS_ACCESS_KEY_ID: ${{ secrets.YC_S3_KEY_ID }}
+  #         AWS_SECRET_ACCESS_KEY: ${{ secrets.YC_S3_SECRET }}
+  #       run: |
+  #         aws s3 sync dist/ s3://ai-message-web/ \
+  #           --endpoint-url=https://storage.yandexcloud.net \
+  #           --delete
