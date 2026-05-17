@@ -41,6 +41,23 @@ pnpm --filter @ai-message/web dev
 | `pnpm lint` | Линтинг |
 | `pnpm typecheck` | Проверка типов TypeScript |
 
+## Workflow разработки
+
+- **`main`** — стабильная, всегда деплоимая в production. Прямые коммиты запрещены.
+- **`dev`** — основная ветка разработки. Сюда мержатся feature-ветки.
+- **`feature/<short-desc>`** — короткоживущие ветки от `dev`. Merge в `dev` через PR.
+- **Релиз:** PR `dev → main` после прохождения CI и QA. Merge запускает `Deploy` workflow.
+- **Hotfix:** ветка от `main`, PR в `main` + cherry-pick в `dev`.
+
+```
+feature/* ──▶ dev ──(PR + CI ✅)──▶ main ──▶ Deploy
+```
+
+### CI/CD
+
+- **`.github/workflows/ci.yml`** — на каждый push/PR в `main` и `dev`: typecheck + build. Артефакт сборки сохраняется на 7 дней.
+- **`.github/workflows/deploy.yml`** — на push в `main`: production-сборка. Сам шаг публикации появится после выбора хостинга (S3/Yandex Object Storage/k8s).
+
 ## Лицензия
 
 Proprietary © 2026
