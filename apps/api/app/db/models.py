@@ -1,9 +1,21 @@
 from datetime import datetime
 from enum import Enum
+from typing import Any
 
-from sqlalchemy import DateTime, String, Text, func
+from sqlalchemy import (
+    DDL,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    event,
+    func,
+)
+from sqlalchemy import JSON as SAJSON
 from sqlalchemy import Enum as SAEnum
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import text as sql_text
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
 
@@ -67,4 +79,157 @@ class Integration(Base):
         server_default=func.now(),
         onupdate=func.now(),
         nullable=False,
+    )
+
+    conversations: Mapped[list["Conversation"]] = relationship(
+        back_populates="integration",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
+
+
+class ConversationChannel(str, Enum):
+    """Канал, из которого пришёл диалог."""
+
+    # Bitrix24 Open Channels: каждый коннектор — отдельное значение.
+    whatsapp = "whatsapp"
+    telegram = "telegram"
+    vk = "vk"
+    instagram = "instagram"
+    facebook = "facebook"
+    livechat = "livechat"  # виджет сайта
+    email = "email"
+    other = "other"
+
+
+class ConversationStatus(str, Enum):
+    open = "open"
+    closed = "closed"
+
+
+class SenderType(str, Enum):
+    client = "client"
+    agent = "agent"
+    bot = "bot"
+    system = "system"
+
+
+class Conversation(Base):
+    """Один диалог (Open Channels session, email-цепочка и т.п.)."""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    integration_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("integrations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Идентификатор на стороне внешней системы (Bitrix CHAT_ID, session_id и т.д.).
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    channel: Mapped[ConversationChannel] = mapped_column(
+        SAEnum(ConversationChannel, name="conversation_channel"),
+        nullable=False,
+    )
+    contact_name: Mapped[str | None] = mapped_column(String(255))
+    contact_external_id: Mapped[str | None] = mapped_column(String(128))
+    status: Mapped[ConversationStatus] = mapped_column(
+        SAEnum(ConversationStatus, name="conversation_status"),
+        default=ConversationStatus.open,
+        nullable=False,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    integration: Mapped["Integration"] = relationship(back_populates="conversations")
+    messages: Mapped[list["Message"]] = relationship(
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="Message.sent_at",
+    )
+
+    __table_args__ = (
+        # Список диалогов на портале по дате — главный запрос Inbox.
+        Index(
+            "ix_conversations_integration_created",
+            "integration_id",
+            "created_at",
+        ),
+        # Дедупликация при импорте: один external_id на интеграцию.
+        Index(
+            "uq_conversations_integration_external",
+            "integration_id",
+            "external_id",
+            unique=True,
+        ),
+    )
+
+
+class Message(Base):
+    """Одно сообщение в диалоге."""
+
+    __tablename__ = "messages"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Идентификатор на стороне внешней системы — нужен для дедупликации.
+    external_id: Mapped[str | None] = mapped_column(String(128))
+    sender_type: Mapped[SenderType] = mapped_column(
+        SAEnum(SenderType, name="message_sender_type"),
+        nullable=False,
+    )
+    sender_external_id: Mapped[str | None] = mapped_column(String(128))
+    text: Mapped[str | None] = mapped_column(Text)
+    # Список вложений в произвольной структуре (url, name, mime, size, ...).
+    attachments: Mapped[list[dict[str, Any]] | None] = mapped_column(SAJSON)
+    sent_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+    conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+    __table_args__ = (
+        Index("ix_messages_conversation_sent", "conversation_id", "sent_at"),
+        Index(
+            "uq_messages_conversation_external",
+            "conversation_id",
+            "external_id",
+            unique=True,
+            postgresql_where=sql_text("external_id IS NOT NULL"),
+            sqlite_where=sql_text("external_id IS NOT NULL"),
+        ),
+    )
+
+
+# Полнотекстовый поиск по сообщениям — только Postgres.
+# Подключаем generated-колонку `tsv` и GIN-индекс через DDL-хук, чтобы
+# SQLite в тестах работал без TSVECTOR.
+_FTS_LANG = "russian"
+
+
+@event.listens_for(Message.__table__, "after_create")
+def _create_messages_fts(target, connection, **kw) -> None:  # pragma: no cover
+    if connection.dialect.name != "postgresql":
+        return
+    connection.execute(
+        DDL(
+            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS tsv tsvector "
+            f"GENERATED ALWAYS AS (to_tsvector('{_FTS_LANG}', coalesce(text, ''))) STORED"
+        )
+    )
+    connection.execute(
+        DDL("CREATE INDEX IF NOT EXISTS ix_messages_tsv ON messages USING GIN (tsv)")
     )
