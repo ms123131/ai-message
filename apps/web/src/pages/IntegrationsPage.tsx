@@ -1,20 +1,18 @@
-import { useMemo, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
+  AlertTriangle,
   CheckCircle2,
   Clock,
   KeyRound,
+  Loader2,
   Plug,
   Trash2,
   Webhook,
 } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/Button";
-import {
-  deleteConnection,
-  listConnections,
-  type Bitrix24Connection,
-} from "../lib/connections";
+import { api, type Integration } from "../lib/api";
 
 type CatalogItem = {
   id: string;
@@ -28,8 +26,7 @@ const catalog: CatalogItem[] = [
   {
     id: "bitrix24",
     name: "Bitrix24",
-    description:
-      "CRM + Open Channels (WhatsApp, Telegram, ВК, виджет сайта)",
+    description: "CRM + Open Channels (WhatsApp, Telegram, ВК, виджет сайта)",
     available: true,
     priority: true,
   },
@@ -55,14 +52,19 @@ const catalog: CatalogItem[] = [
 
 export function IntegrationsPage() {
   const navigate = useNavigate();
-  const [tick, setTick] = useState(0); // принудительный re-read из localStorage
-  const connections = useMemo(() => listConnections(), [tick]);
+  const qc = useQueryClient();
 
-  function handleDelete(id: string) {
-    if (!confirm("Удалить это подключение?")) return;
-    deleteConnection(id);
-    setTick((t) => t + 1);
-  }
+  const { data, isLoading, isError, error } = useQuery({
+    queryKey: ["integrations"],
+    queryFn: api.listIntegrations,
+  });
+
+  const del = useMutation({
+    mutationFn: (id: string) => api.deleteIntegration(id),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["integrations"] }),
+  });
+
+  const connections = data ?? [];
 
   return (
     <>
@@ -71,6 +73,22 @@ export function IntegrationsPage() {
         description="Источники коммуникаций для анализа"
       />
       <div className="space-y-8 p-8">
+        {isError && (
+          <div className="flex items-start gap-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+            <AlertTriangle className="h-4 w-4 shrink-0" />
+            <div>
+              Не удалось загрузить подключения: {(error as Error).message}.
+              Запущен ли backend на VITE_API_URL?
+            </div>
+          </div>
+        )}
+
+        {isLoading && (
+          <div className="flex items-center gap-2 text-sm text-slate-500">
+            <Loader2 className="h-4 w-4 animate-spin" /> Загрузка…
+          </div>
+        )}
+
         {connections.length > 0 && (
           <section>
             <h2 className="mb-3 text-sm font-medium text-slate-500">
@@ -81,7 +99,9 @@ export function IntegrationsPage() {
                 <ConnectionCard
                   key={c.id}
                   conn={c}
-                  onDelete={() => handleDelete(c.id)}
+                  onDelete={() => {
+                    if (confirm("Удалить это подключение?")) del.mutate(c.id);
+                  }}
                 />
               ))}
             </div>
@@ -149,7 +169,7 @@ function ConnectionCard({
   conn,
   onDelete,
 }: {
-  conn: Bitrix24Connection;
+  conn: Integration;
   onDelete: () => void;
 }) {
   const ModeIcon = conn.mode === "oauth" ? KeyRound : Webhook;
@@ -167,7 +187,7 @@ function ConnectionCard({
           </div>
           <div className="mt-2 text-xs text-slate-400">
             {conn.mode === "oauth" ? "OAuth-приложение" : "Входящий webhook"} ·
-            добавлен {new Date(conn.createdAt).toLocaleString("ru-RU")}
+            добавлен {new Date(conn.created_at).toLocaleString("ru-RU")}
           </div>
         </div>
         <button
@@ -182,7 +202,7 @@ function ConnectionCard({
   );
 }
 
-function StatusBadge({ status }: { status: Bitrix24Connection["status"] }) {
+function StatusBadge({ status }: { status: Integration["status"] }) {
   if (status === "connected")
     return (
       <span className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-xs text-emerald-700">
@@ -192,7 +212,7 @@ function StatusBadge({ status }: { status: Bitrix24Connection["status"] }) {
   if (status === "pending")
     return (
       <span className="inline-flex items-center gap-1 rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700">
-        <Clock className="h-3 w-3" /> ожидает backend
+        <Clock className="h-3 w-3" /> ожидает обмена
       </span>
     );
   return (

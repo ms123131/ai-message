@@ -7,13 +7,9 @@ import {
   Loader2,
 } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
-import {
-  getConnection,
-  saveConnection,
-  type Bitrix24Connection,
-} from "../../lib/connections";
+import { api, ApiError, type Integration } from "../../lib/api";
 
-const STATE_STORAGE_KEY = "ai-message:b24-pending-oauth";
+const PENDING_KEY = "ai-message:b24-pending-oauth";
 
 type Status = "loading" | "success" | "error";
 
@@ -24,63 +20,66 @@ export function Bitrix24Callback() {
   const domain = params.get("domain");
   const memberId = params.get("member_id");
   const scope = params.get("scope");
-  const error = params.get("error");
+  const oauthError = params.get("error");
 
   const [status, setStatus] = useState<Status>("loading");
   const [message, setMessage] = useState<string>("");
-  const [conn, setConn] = useState<Bitrix24Connection | null>(null);
+  const [conn, setConn] = useState<Integration | null>(null);
 
-  const expected = useMemo(() => {
+  const pending = useMemo(() => {
     try {
-      const raw = sessionStorage.getItem(STATE_STORAGE_KEY);
-      return raw
-        ? (JSON.parse(raw) as { state: string; id: string })
-        : null;
+      const raw = sessionStorage.getItem(PENDING_KEY);
+      return raw ? (JSON.parse(raw) as { id: string }) : null;
     } catch {
       return null;
     }
   }, []);
 
   useEffect(() => {
-    if (error) {
-      setStatus("error");
-      setMessage(`Bitrix24 вернул ошибку: ${error}`);
-      return;
-    }
-    if (!code || !state) {
-      setStatus("error");
-      setMessage("Не получены параметры code и state в callback URL");
-      return;
-    }
-    if (!expected || expected.state !== state) {
-      setStatus("error");
-      setMessage(
-        "Параметр state не совпадает с ожидаемым. Возможна попытка CSRF — авторизация прервана.",
-      );
-      return;
-    }
-
-    const draft = getConnection(expected.id);
-    if (!draft) {
-      setStatus("error");
-      setMessage("Черновик соединения не найден");
-      return;
-    }
-
-    const updated: Bitrix24Connection = {
-      ...draft,
-      code,
-      domain: domain ?? draft.domain,
-      memberId: memberId ?? undefined,
-      scope: scope ?? undefined,
-      // status пока pending — реальный обмен code → access_token произойдёт на backend
-      status: "pending",
+    let cancelled = false;
+    (async () => {
+      if (oauthError) {
+        setStatus("error");
+        setMessage(`Bitrix24 вернул ошибку: ${oauthError}`);
+        return;
+      }
+      if (!code || !state) {
+        setStatus("error");
+        setMessage("Не получены параметры code и state");
+        return;
+      }
+      const integrationId = state.split(".")[0];
+      if (!integrationId || (pending && pending.id !== integrationId)) {
+        setStatus("error");
+        setMessage("Параметр state некорректный — авторизация прервана");
+        return;
+      }
+      try {
+        const result = await api.exchangeBitrix24Code({
+          integration_id: integrationId,
+          code,
+          domain: domain ?? "",
+          member_id: memberId,
+          scope,
+        });
+        if (cancelled) return;
+        sessionStorage.removeItem(PENDING_KEY);
+        setConn(result);
+        setStatus("success");
+      } catch (e) {
+        if (cancelled) return;
+        setStatus("error");
+        setMessage(
+          e instanceof ApiError
+            ? `Ошибка обмена: ${e.message}`
+            : "Неизвестная ошибка обмена кода на токен",
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
     };
-    saveConnection(updated);
-    setConn(updated);
-    sessionStorage.removeItem(STATE_STORAGE_KEY);
-    setStatus("success");
-  }, [code, state, domain, memberId, scope, error, expected]);
+  }, [code, state, domain, memberId, scope, oauthError, pending]);
 
   return (
     <>
@@ -93,7 +92,7 @@ export function Bitrix24Callback() {
           {status === "loading" && (
             <div className="flex items-center gap-3 text-slate-600">
               <Loader2 className="h-5 w-5 animate-spin" />
-              Проверяем параметры авторизации…
+              Обмениваем код на access_token…
             </div>
           )}
 
@@ -102,15 +101,10 @@ export function Bitrix24Callback() {
               <div className="flex items-start gap-3 text-emerald-700">
                 <CheckCircle2 className="mt-0.5 h-5 w-5" />
                 <div>
-                  <div className="font-medium">Код авторизации получен</div>
+                  <div className="font-medium">Подключение активировано</div>
                   <p className="mt-1 text-sm text-emerald-700/80">
-                    Параметры сохранены. Финальный обмен{" "}
-                    <code className="rounded bg-emerald-100 px-1">code</code>{" "}
-                    →{" "}
-                    <code className="rounded bg-emerald-100 px-1">
-                      access_token
-                    </code>{" "}
-                    выполнит backend (фаза 2).
+                    Получены access_token и refresh_token. Подключение в
+                    статусе «connected».
                   </p>
                 </div>
               </div>
@@ -119,13 +113,9 @@ export function Bitrix24Callback() {
                 <dt className="text-slate-500">Портал</dt>
                 <dd className="font-medium">{conn.domain}</dd>
                 <dt className="text-slate-500">member_id</dt>
-                <dd className="font-mono text-xs">{conn.memberId ?? "—"}</dd>
+                <dd className="font-mono text-xs">{conn.member_id ?? "—"}</dd>
                 <dt className="text-slate-500">scope</dt>
                 <dd className="font-mono text-xs">{conn.scope ?? "—"}</dd>
-                <dt className="text-slate-500">code</dt>
-                <dd className="font-mono text-xs truncate">
-                  {conn.code?.slice(0, 16)}…
-                </dd>
               </dl>
 
               <div className="mt-6 flex justify-end">
