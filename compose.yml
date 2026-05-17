@@ -51,8 +51,9 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
-        # В прод-сборке фронт ходит на /api (тот же origin, через nginx-прокси).
-        VITE_API_URL: ${VITE_API_URL:-/api}
+        # В прод-сборке фронт ходит на тот же origin через nginx-прокси
+        # (роуты уже включают префикс `/api/v1/...`), поэтому base — пустая строка.
+        VITE_API_URL: ${VITE_API_URL-}
     restart: unless-stopped
     depends_on:
       - api
