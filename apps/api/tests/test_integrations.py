@@ -1,68 +1,133 @@
-async def test_create_webhook_integration(client):
+"""Тесты CRUD интеграций и connect-flow."""
+
+from __future__ import annotations
+
+import pytest
+
+from app.db.models import (
+    Integration,
+    IntegrationKind,
+    IntegrationMode,
+    IntegrationStatus,
+)
+from app.db.session import AsyncSessionLocal
+
+
+async def _seed_pending_integration(domain: str = "acme.bitrix24.ru") -> str:
+    async with AsyncSessionLocal() as session:
+        integration = Integration(
+            id="b24_pending_1",
+            tenant_id=None,  # «осиротевшая» — ждёт привязки через /connect
+            kind=IntegrationKind.bitrix24,
+            mode=IntegrationMode.oauth,
+            label=domain,
+            domain=domain,
+            status=IntegrationStatus.connected,
+            access_token="access-xyz",
+            refresh_token="refresh-xyz",
+            member_id="member-abc",
+        )
+        session.add(integration)
+        await session.commit()
+        return integration.id
+
+
+@pytest.mark.asyncio
+async def test_list_integrations_empty_for_new_user(client):
+    resp = await client.get("/api/v1/integrations")
+    assert resp.status_code == 200
+    assert resp.json() == []
+
+
+@pytest.mark.asyncio
+async def test_connect_claims_pending_integration(client, auth_tenant_id):
+    await _seed_pending_integration("acme.bitrix24.ru")
     resp = await client.post(
-        "/api/v1/integrations/bitrix24/webhook",
-        json={
-            "label": "Test portal",
-            "webhook_url": "https://test.bitrix24.ru/rest/1/abcdef123456/",
-        },
+        "/api/v1/integrations/bitrix24/connect",
+        json={"domain": "https://ACME.bitrix24.ru/", "label": "Acme prod"},
     )
-    assert resp.status_code == 201, resp.text
+    assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["mode"] == "webhook"
+    assert body["domain"] == "acme.bitrix24.ru"
+    assert body["label"] == "Acme prod"
     assert body["status"] == "connected"
-    assert body["domain"] == "test.bitrix24.ru"
-
-
-async def test_list_and_delete(client):
-    create = await client.post(
-        "/api/v1/integrations/bitrix24/webhook",
-        json={
-            "label": "Test 2",
-            "webhook_url": "https://x.bitrix24.ru/rest/1/aaaaaaaaaaaaaaaa/",
-        },
-    )
-    assert create.status_code == 201, create.text
-    integration_id = create.json()["id"]
 
     list_resp = await client.get("/api/v1/integrations")
-    assert list_resp.status_code == 200
-    assert any(i["id"] == integration_id for i in list_resp.json())
+    assert len(list_resp.json()) == 1
+    assert list_resp.json()[0]["id"] == "b24_pending_1"
+
+
+@pytest.mark.asyncio
+async def test_connect_returns_not_installed_when_no_record(client):
+    resp = await client.post(
+        "/api/v1/integrations/bitrix24/connect",
+        json={"domain": "missing.bitrix24.ru"},
+    )
+    assert resp.status_code == 404
+    detail = resp.json()["detail"]
+    assert detail["status"] == "not_installed"
+    assert detail["domain"] == "missing.bitrix24.ru"
+    assert "install_instructions_url" in detail
+
+
+@pytest.mark.asyncio
+async def test_connect_rejects_already_claimed_by_other_tenant(client):
+    """Если портал уже привязан к другому tenant — отдаём 409."""
+    from app.db.models import Tenant
+
+    async with AsyncSessionLocal() as session:
+        session.add(Tenant(id="tnt_someone_else", name="Other"))
+        await session.flush()
+        session.add(
+            Integration(
+                id="b24_owned",
+                tenant_id="tnt_someone_else",
+                kind=IntegrationKind.bitrix24,
+                mode=IntegrationMode.oauth,
+                label="Owned",
+                domain="owned.bitrix24.ru",
+                status=IntegrationStatus.connected,
+            )
+        )
+        await session.commit()
+
+    resp = await client.post(
+        "/api/v1/integrations/bitrix24/connect",
+        json={"domain": "owned.bitrix24.ru"},
+    )
+    assert resp.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_delete_integration_works(client, auth_tenant_id):
+    integration_id = await _seed_pending_integration()
+    # Сначала «забираем» интеграцию.
+    claim = await client.post(
+        "/api/v1/integrations/bitrix24/connect",
+        json={"domain": "acme.bitrix24.ru"},
+    )
+    assert claim.status_code == 200
 
     del_resp = await client.delete(f"/api/v1/integrations/{integration_id}")
     assert del_resp.status_code == 204
 
-    list2 = await client.get("/api/v1/integrations")
-    assert all(i["id"] != integration_id for i in list2.json())
+    assert (await client.get("/api/v1/integrations")).json() == []
 
 
-def test_portal_from_client_endpoint():
-    from app.api.v1.integrations import _portal_from_client_endpoint
+@pytest.mark.asyncio
+async def test_connect_requires_auth():
+    """Без токена /connect должен возвращать 401."""
+    from httpx import ASGITransport, AsyncClient
 
-    assert (
-        _portal_from_client_endpoint("https://acme.bitrix24.ru/rest/")
-        == "acme.bitrix24.ru"
-    )
-    assert (
-        _portal_from_client_endpoint("https://b24-xyz.bitrix24.com/rest/")
-        == "b24-xyz.bitrix24.com"
-    )
-    assert _portal_from_client_endpoint(None) is None
-    assert _portal_from_client_endpoint("") is None
-    assert _portal_from_client_endpoint("not a url") is None
+    from app.db.session import Base, engine
+    from app.main import app
 
-
-async def test_create_oauth_returns_authorize_url(client):
-    resp = await client.post(
-        "/api/v1/integrations/bitrix24/oauth",
-        json={
-            "label": "Portal A",
-            "domain": "company.bitrix24.ru",
-            "client_id": "app.abc123def456",
-            "client_secret": "secret123",
-        },
-    )
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
-    assert body["integration"]["status"] == "pending"
-    assert "company.bitrix24.ru/oauth/authorize/" in body["authorize_url"]
-    assert "client_id=app.abc123def456" in body["authorize_url"]
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+        await conn.run_sync(Base.metadata.create_all)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.post(
+            "/api/v1/integrations/bitrix24/connect",
+            json={"domain": "x.bitrix24.ru"},
+        )
+        assert resp.status_code == 401

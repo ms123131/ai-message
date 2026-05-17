@@ -184,35 +184,6 @@ async def test_proactive_refresh_when_token_about_to_expire(monkeypatch):
     assert called["n"] == 1
 
 
-async def test_webhook_mode_uses_webhook_url():
-    captured: list[httpx.Request] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured.append(request)
-        return _ok([])
-
-    integration = _make_integration(
-        mode=IntegrationMode.webhook,
-        webhook_url="https://test.bitrix24.ru/rest/1/abcdef",
-        access_token=None,
-        refresh_token=None,
-        client_id=None,
-        client_secret=None,
-        expires_at=None,
-    )
-    transport = httpx.MockTransport(handler)
-    async with AsyncSessionLocal() as session:
-        session.add(integration)
-        await session.commit()
-        async with BitrixClient(integration, session, transport=transport) as client:
-            await client.call("crm.lead.list")
-
-    req = captured[0]
-    assert str(req.url) == "https://test.bitrix24.ru/rest/1/abcdef/crm.lead.list.json"
-    body = parse_qs(req.content.decode())
-    assert "auth" not in body
-
-
 async def test_batch_packs_commands():
     captured: list[httpx.Request] = []
 

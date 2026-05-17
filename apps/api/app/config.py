@@ -19,9 +19,12 @@ class Settings(BaseSettings):
     jwt_expires_min: int = 60
 
     bitrix24_oauth_token_url: str = "https://oauth.bitrix24.tech/oauth/token/"
-    # client_secret per-tenant — хранится в БД (Integration.client_secret).
-    # Глобальный secret оставлен опциональным для одно-арендных установок.
-    bitrix24_client_secret: str | None = Field(default=None)
+    # Глобальные client_id/secret НАШЕГО Bitrix24-приложения. Хранятся в .env,
+    # один на всех клиентов. Клиент устанавливает приложение на свой портал —
+    # B24 присылает токены в /install/bitrix24, мы сохраняем их и потом
+    # привязываем к tenant'у по доменному имени портала.
+    bitrix24_app_client_id: str | None = Field(default=None)
+    bitrix24_app_client_secret: str | None = Field(default=None)
 
     # Публичный URL приложения — используется как handler для event.bind.
     # Например, https://example.com или https://abc123.ngrok-free.app.

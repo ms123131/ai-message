@@ -75,7 +75,6 @@ class IntegrationKind(str, Enum):
 
 class IntegrationMode(str, Enum):
     oauth = "oauth"
-    webhook = "webhook"
 
 
 class IntegrationStatus(str, Enum):
@@ -122,9 +121,6 @@ class Integration(Base):
     member_id: Mapped[str | None] = mapped_column(String(100))
     scope: Mapped[str | None] = mapped_column(String(500))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
-
-    # Webhook-режим
-    webhook_url: Mapped[str | None] = mapped_column(Text)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

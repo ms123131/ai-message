@@ -247,31 +247,8 @@ export const api = {
   deleteIntegration: (id: string) =>
     request<void>(`/api/v1/integrations/${id}`, { method: "DELETE" }),
 
-  createBitrix24OAuth: (body: {
-    label: string;
-    domain: string;
-    client_id: string;
-    client_secret: string;
-  }) =>
-    request<{ integration: Integration; authorize_url: string }>(
-      "/api/v1/integrations/bitrix24/oauth",
-      { method: "POST", body: JSON.stringify(body) },
-    ),
-
-  createBitrix24Webhook: (body: { label: string; webhook_url: string }) =>
-    request<Integration>("/api/v1/integrations/bitrix24/webhook", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-
-  exchangeBitrix24Code: (body: {
-    integration_id: string;
-    code: string;
-    domain: string;
-    member_id?: string | null;
-    scope?: string | null;
-  }) =>
-    request<Integration>("/api/v1/integrations/bitrix24/oauth/exchange", {
+  connectBitrix24: (body: { domain: string; label?: string }) =>
+    request<Integration>("/api/v1/integrations/bitrix24/connect", {
       method: "POST",
       body: JSON.stringify(body),
     }),

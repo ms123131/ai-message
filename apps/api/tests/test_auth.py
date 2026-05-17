@@ -93,14 +93,38 @@ async def test_tenant_isolation_for_integrations(raw_client):
     token_a = a.json()["access_token"]
     token_b = b.json()["access_token"]
 
-    # A создаёт интеграцию
-    create = await raw_client.post(
-        "/api/v1/integrations/bitrix24/webhook",
-        headers={"Authorization": f"Bearer {token_a}"},
-        json={"label": "A's portal", "webhook_url": "https://a.bitrix24.ru/rest/1/abc/"},
+    # A: сидируем pending-интеграцию и забираем её через /connect.
+    from app.db.models import (
+        Integration,
+        IntegrationKind,
+        IntegrationMode,
+        IntegrationStatus,
     )
-    assert create.status_code == 201
-    integration_id = create.json()["id"]
+    from app.db.session import AsyncSessionLocal
+
+    async with AsyncSessionLocal() as session:
+        session.add(
+            Integration(
+                id="b24_a",
+                tenant_id=None,
+                kind=IntegrationKind.bitrix24,
+                mode=IntegrationMode.oauth,
+                label="A portal",
+                domain="a.bitrix24.ru",
+                status=IntegrationStatus.connected,
+                access_token="x",
+                refresh_token="y",
+            )
+        )
+        await session.commit()
+
+    claim = await raw_client.post(
+        "/api/v1/integrations/bitrix24/connect",
+        headers={"Authorization": f"Bearer {token_a}"},
+        json={"domain": "a.bitrix24.ru"},
+    )
+    assert claim.status_code == 200
+    integration_id = claim.json()["id"]
 
     # A видит свою
     list_a = await raw_client.get(

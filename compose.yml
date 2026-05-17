@@ -43,6 +43,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
       WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL-}
+      BITRIX24_APP_CLIENT_ID: ${BITRIX24_APP_CLIENT_ID-}
+      BITRIX24_APP_CLIENT_SECRET: ${BITRIX24_APP_CLIENT_SECRET-}
     # Прямой доступ к API — на время разработки. В проде убрать.
     ports:
       - "8000:8000"

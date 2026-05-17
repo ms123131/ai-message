@@ -34,11 +34,12 @@ def _make_integration(integration_id: str = "intg_1") -> Integration:
     return Integration(
         id=integration_id,
         kind=IntegrationKind.bitrix24,
-        mode=IntegrationMode.webhook,
+        mode=IntegrationMode.oauth,
         label="Test",
         domain="test.bitrix24.ru",
         status=IntegrationStatus.connected,
-        webhook_url="https://test.bitrix24.ru/rest/1/abc",
+        access_token="access-x",
+        refresh_token="refresh-x",
     )
 
 

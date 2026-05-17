@@ -2,10 +2,10 @@
 Bitrix24 REST-клиент.
 
 Возможности:
-* OAuth-режим: использует `Integration.access_token`, авто-refresh за `REFRESH_LEEWAY`
-  до истечения и при ответе `expired_token` (один retry).
-* Webhook-режим: вызывает методы через сохранённый `webhook_url`
-  (формат `https://{portal}/rest/{user_id}/{token}/`).
+* OAuth: использует `Integration.access_token`, авто-refresh за `REFRESH_LEEWAY`
+  до истечения и при ответе `expired_token` (один retry). Credentials берутся
+  из settings (`BITRIX24_APP_CLIENT_ID/SECRET`) — одно тиражное приложение
+  на всех клиентов.
 * Throttling: не более `MAX_RPS` запросов в секунду на портал (глобальный реестр).
 * `batch()` — до 50 команд за один HTTP-запрос (метод `batch` REST API).
 
@@ -48,7 +48,7 @@ class BitrixAPIError(RuntimeError):
 
 
 class BitrixIntegrationStateError(RuntimeError):
-    """Интеграция не готова к использованию (нет токенов / webhook_url)."""
+    """Интеграция не готова к использованию (нет токенов / домена)."""
 
 
 class _PortalThrottle:
@@ -129,11 +129,6 @@ class BitrixClient:
 
     def _build_url(self, method: str) -> str:
         i = self.integration
-        if i.mode == IntegrationMode.webhook:
-            if not i.webhook_url:
-                raise BitrixIntegrationStateError("webhook_url is empty")
-            base = i.webhook_url.rstrip("/")
-            return f"{base}/{method}.json"
         if not i.domain:
             raise BitrixIntegrationStateError("domain is empty")
         return f"https://{i.domain}/rest/{method}.json"
@@ -149,13 +144,22 @@ class BitrixClient:
         await self._refresh()
 
     async def _refresh(self) -> None:
+        from app.config import get_settings
+
         i = self.integration
-        if not (i.client_id and i.client_secret and i.refresh_token):
-            raise BitrixIntegrationStateError("OAuth credentials are missing")
+        settings = get_settings()
+        # Credentials глобальные (одно тиражное приложение). Per-integration
+        # client_id/secret поддерживаем как fallback для старых OAuth-записей.
+        client_id = settings.bitrix24_app_client_id or i.client_id
+        client_secret = settings.bitrix24_app_client_secret or i.client_secret
+        if not (client_id and client_secret and i.refresh_token):
+            raise BitrixIntegrationStateError(
+                "OAuth credentials are missing (BITRIX24_APP_CLIENT_ID/SECRET в .env?)"
+            )
         try:
             tokens: TokenResponse = await refresh_token(
-                client_id=i.client_id,
-                client_secret=i.client_secret,
+                client_id=client_id,
+                client_secret=client_secret,
                 refresh_token_value=i.refresh_token,
             )
         except BitrixOAuthError:
@@ -173,9 +177,7 @@ class BitrixClient:
         await self.session.flush()
 
     def _auth_params(self) -> dict[str, str]:
-        if self.integration.mode == IntegrationMode.oauth:
-            return {"auth": self.integration.access_token or ""}
-        return {}
+        return {"auth": self.integration.access_token or ""}
 
     async def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         url = self._build_url(method)
