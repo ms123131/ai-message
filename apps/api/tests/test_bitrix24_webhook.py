@@ -20,27 +20,33 @@ from app.db.session import AsyncSessionLocal
 
 def _form_payload(
     *,
-    event: str = "ONIMOPENLINESMESSAGEADD",
+    event: str = "ONOPENLINEMESSAGEADD",
     chat_id: str = "12345",
     message: str = "Привет, помогите с заказом",
     message_id: str = "msg_ext_1",
-    author_id: str = "user_42",
+    # message.user_id во внутренней B24-нумерации; для клиента совпадает с connector.user_id
+    message_user_id: str = "1985",
+    connector_user_id: str = "1985",
     connector: str = "telegram",
-    is_own: str = "N",
+    system: str = "N",
     member_id: str = "member-portal-1",
     domain: str = "portal.bitrix24.ru",
     ts: str = "1717000000",
 ) -> dict[str, str]:
     return {
         "event": event,
+        "eventId": "1",
         "ts": ts,
-        "data[PARAMS][CHAT_ID]": chat_id,
-        "data[PARAMS][MESSAGE]": message,
-        "data[PARAMS][ID]": message_id,
-        "data[PARAMS][AUTHOR_ID]": author_id,
-        "data[PARAMS][CONNECTOR][ID]": connector,
-        "data[PARAMS][CONNECTOR][CHAT_ID]": "tg_external_42",
-        "data[PARAMS][IS_OWN_MESSAGE]": is_own,
+        "data[DATA][0][connector][connector_id]": connector,
+        "data[DATA][0][connector][line_id]": "128",
+        "data[DATA][0][connector][chat_id]": "tg_external_42",
+        "data[DATA][0][connector][user_id]": connector_user_id,
+        "data[DATA][0][chat][id]": chat_id,
+        "data[DATA][0][message][id]": message_id,
+        "data[DATA][0][message][date]": "",
+        "data[DATA][0][message][text]": message,
+        "data[DATA][0][message][system]": system,
+        "data[DATA][0][message][user_id]": message_user_id,
         "auth[domain]": domain,
         "auth[member_id]": member_id,
         "auth[application_token]": "app-token",
@@ -112,7 +118,10 @@ async def test_webhook_appends_to_existing_conversation(client):
     await client.post(
         "/api/v1/webhooks/bitrix24",
         data=_form_payload(
-            message_id="m2", message="а вот и второе сообщение", is_own="Y"
+            message_id="m2",
+            message="а вот и второе сообщение",
+            # message.user_id != connector.user_id → оператор
+            message_user_id="100",
         ),
     )
     async with AsyncSessionLocal() as session:

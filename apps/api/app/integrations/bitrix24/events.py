@@ -4,16 +4,21 @@
 Документация:
   https://apidocs.bitrix24.ru/api-reference/events/index.html
   https://apidocs.bitrix24.ru/api-reference/event-bind/index.html
+  https://apidocs.bitrix24.ru/api-reference/imopenlines/openlines/events/on-open-line-message-add.html
 
 Open Channels event payload (form-urlencoded):
-  event=ONIMOPENLINESMESSAGEADD
-  data[PARAMS][CHAT_ID]=12345
-  data[PARAMS][MESSAGE]=Привет
-  data[PARAMS][FROM_USER_ID]=42
-  data[PARAMS][AUTHOR_ID]=42
-  data[PARAMS][SESSION_ID]=999
-  data[PARAMS][CONNECTOR][ID]=telegram
-  data[PARAMS][CONNECTOR][CHAT_ID]=tg_chat_external
+  event=ONOPENLINEMESSAGEADD
+  eventId=1
+  data[DATA][0][connector][connector_id]=livechat   # id коннектора (livechat, telegram, ...)
+  data[DATA][0][connector][line_id]=128
+  data[DATA][0][connector][chat_id]=10587           # chat_id во внешней системе
+  data[DATA][0][connector][user_id]=1985            # user_id во внешней системе
+  data[DATA][0][chat][id]=10585                     # chat_id внутри B24 (наш external_id)
+  data[DATA][0][message][id]=80964
+  data[DATA][0][message][date]=2026-05-17T19:28:18+03:00
+  data[DATA][0][message][text]=hello
+  data[DATA][0][message][system]=N
+  data[DATA][0][message][user_id]=1985              # sender внутри B24
   ts=1717000000
   auth[domain]=portal.bitrix24.ru
   auth[member_id]=abcdef…
@@ -29,10 +34,9 @@ from typing import Any
 from app.db.models import ConversationChannel, SenderType
 
 # Подписываемся на эти события при настройке интеграции.
+# Имена соответствуют актуальной документации B24 (без префикса `Im` и без `s` в `Line`).
 SUPPORTED_EVENTS: tuple[str, ...] = (
-    "OnImOpenLinesMessageAdd",
-    "OnImOpenLinesSessionStart",
-    "OnImOpenLinesSessionFinish",
+    "OnOpenLineMessageAdd",
 )
 
 # Маппинг id коннектора Open Channels → наш enum.
@@ -92,43 +96,56 @@ def _g(d: dict[str, str], *keys: str) -> str | None:
 
 def parse_openlines_message(payload: dict[str, Any]) -> ParsedMessageEvent | None:
     """
-    Парсит form-payload OnImOpenLinesMessageAdd.
+    Парсит form-payload `OnOpenLineMessageAdd`.
+
+    Bitrix24 шлёт несколько сообщений в одном hit через `data[DATA][N][...]`.
+    Этот парсер берёт первое (N=0) — webhook-handler может вызвать парсер
+    с разными префиксами при необходимости (TODO: пагинация по N).
 
     Возвращает None если событие не относится к сообщениям Open Channels.
     """
     flat = _flatten_form(payload)
     event = (flat.get("event") or "").upper()
-    if event != "ONIMOPENLINESMESSAGEADD":
+    if event != "ONOPENLINEMESSAGEADD":
         return None
 
-    chat_id = _g(flat, "data[PARAMS][CHAT_ID]", "data[CHAT][ID]", "data[CHAT_ID]")
+    p = "data[DATA][0]"  # префикс первого сообщения в пачке
+    chat_id = _g(flat, f"{p}[chat][id]", f"{p}[CHAT][ID]")
     if not chat_id:
         return None
 
-    text = _g(flat, "data[PARAMS][MESSAGE]", "data[MESSAGE]") or ""
-    message_id = _g(flat, "data[PARAMS][ID]", "data[PARAMS][MESSAGE_ID]", "data[MESSAGE][ID]")
-    sender_id = _g(
-        flat,
-        "data[PARAMS][AUTHOR_ID]",
-        "data[PARAMS][FROM_USER_ID]",
-        "data[USER][ID]",
-    )
-    connector_id = _g(
-        flat,
-        "data[PARAMS][CONNECTOR][ID]",
-        "data[PARAMS][CHAT][CONNECTOR][ID]",
-    )
-    connector_chat_id = _g(flat, "data[PARAMS][CONNECTOR][CHAT_ID]")
+    text = _g(flat, f"{p}[message][text]", f"{p}[MESSAGE][TEXT]") or ""
+    message_id = _g(flat, f"{p}[message][id]", f"{p}[MESSAGE][ID]")
+    message_user_id = _g(flat, f"{p}[message][user_id]", f"{p}[MESSAGE][USER_ID]")
+    is_system = (_g(flat, f"{p}[message][system]", f"{p}[MESSAGE][SYSTEM]") or "N").upper() == "Y"
 
-    # Bitrix передаёт IS_OWN_MESSAGE: 'Y' — сообщение оператора (наш пользователь),
-    # 'N' — сообщение клиента из канала.
-    is_own = (_g(flat, "data[PARAMS][IS_OWN_MESSAGE]") or "N").upper() == "Y"
-    sender_type = SenderType.agent if is_own else SenderType.client
+    connector_id = _g(flat, f"{p}[connector][connector_id]", f"{p}[CONNECTOR][CONNECTOR_ID]")
+    connector_chat_id = _g(flat, f"{p}[connector][chat_id]", f"{p}[CONNECTOR][CHAT_ID]")
+    connector_user_id = _g(flat, f"{p}[connector][user_id]", f"{p}[CONNECTOR][USER_ID]")
 
-    ts_raw = _g(flat, "ts", "data[PARAMS][DATE_CREATE]")
+    # Определяем тип отправителя:
+    # - system=Y → системное сообщение от B24;
+    # - message.user_id совпадает с connector.user_id → пишет клиент из внешнего канала;
+    # - иначе → оператор внутри B24.
+    if is_system:
+        sender_type = SenderType.system
+    elif message_user_id and connector_user_id and message_user_id == connector_user_id:
+        sender_type = SenderType.client
+    else:
+        sender_type = SenderType.agent
+
+    # Дата: пробуем ISO-дату из message, иначе ts события.
+    raw_date = _g(flat, f"{p}[message][date]", f"{p}[MESSAGE][DATE]")
     sent_at = datetime.now(UTC)
-    if ts_raw and ts_raw.isdigit():
-        sent_at = datetime.fromtimestamp(int(ts_raw), tz=UTC)
+    if raw_date:
+        try:
+            sent_at = datetime.fromisoformat(raw_date)
+        except ValueError:
+            pass
+    else:
+        ts_raw = _g(flat, "ts")
+        if ts_raw and ts_raw.isdigit():
+            sent_at = datetime.fromtimestamp(int(ts_raw), tz=UTC)
 
     return ParsedMessageEvent(
         event=event,
@@ -138,7 +155,7 @@ def parse_openlines_message(payload: dict[str, Any]) -> ParsedMessageEvent | Non
         chat_id=str(chat_id),
         message_id=str(message_id) if message_id else None,
         text=text,
-        sender_external_id=str(sender_id) if sender_id else None,
+        sender_external_id=str(message_user_id) if message_user_id else None,
         sender_type=sender_type,
         channel=map_connector_to_channel(connector_id),
         connector_chat_id=connector_chat_id,
