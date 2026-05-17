@@ -19,8 +19,9 @@ RUN pip install --upgrade pip && pip install .
 
 # Код приложения
 COPY app ./app
-COPY alembic.ini ./
-COPY migrations ./migrations
+
+# Миграции (alembic.ini + migrations/) добавим, когда схема стабилизируется.
+# Пока таблицы создаются автоматически в lifespan через SQLAlchemy.
 
 RUN mkdir -p /app/data
 
