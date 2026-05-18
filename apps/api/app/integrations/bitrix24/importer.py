@@ -113,6 +113,34 @@ def _sender_type(msg: dict[str, Any], users: dict[str, Any] | None) -> SenderTyp
     return SenderType.agent
 
 
+# Статусы сессии Open Channels в Bitrix24:
+# 0 — новая, 20 — операторская, 25 — клиент ответил, 40 — оператор ответил,
+# 60 — отслеживание, 65/70 — ответы после трекинга, 80 — закрыта, 90 — в архиве.
+# Считаем сессию закрытой при STATUS >= 80.
+_BITRIX_SESSION_CLOSED_STATUS = 80
+
+
+def _session_is_closed(history: dict[str, Any]) -> bool:
+    """Определяет закрытость сессии Open Channels по полю STATUS.
+
+    Bitrix24 в `imopenlines.session.history.get` возвращает блок `session`
+    с числовым STATUS жизненного цикла. STATUS >= 80 — сессия завершена.
+
+    Если STATUS не пришёл (старые API/частичные ответы), считаем диалог
+    открытым — лучше показать активным, чем ошибочно закрыть.
+    """
+    session = history.get("session")
+    if not isinstance(session, dict):
+        return False
+    raw_status = session.get("STATUS")
+    if raw_status is None:
+        raw_status = session.get("status")
+    try:
+        return int(raw_status) >= _BITRIX_SESSION_CLOSED_STATUS
+    except (TypeError, ValueError):
+        return False
+
+
 @dataclass(slots=True)
 class ImportStats:
     sessions: int = 0
@@ -142,8 +170,13 @@ async def _upsert_conversation(
             conv.contact_name = contact_name
         if contact_external_id and not conv.contact_external_id:
             conv.contact_external_id = contact_external_id
-        if is_closed and conv.status == ConversationStatus.open:
-            conv.status = ConversationStatus.closed
+        # Синхронизируем статус в обе стороны: закрытый стал открытым (новое
+        # сообщение в закрытый диалог) и наоборот.
+        target_status = (
+            ConversationStatus.closed if is_closed else ConversationStatus.open
+        )
+        if conv.status != target_status:
+            conv.status = target_status
         return conv
 
     conv = Conversation(
@@ -268,7 +301,7 @@ async def import_open_lines(
         users = history.get("users") or {}
         contact_name, contact_external_id = _extract_contact(users, chat_meta)
         channel = _channel_from_entity_id(chat_meta.get("entityId") or chat_meta.get("entity_id"))
-        is_closed = bool(history.get("sessionId")) and entry.get("counter") == 0
+        is_closed = _session_is_closed(history)
 
         conv = await _upsert_conversation(
             session,

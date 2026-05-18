@@ -8,7 +8,6 @@ import {
   ExternalLink,
   KeyRound,
   Loader2,
-  Plug,
   Store,
 } from "lucide-react";
 import { PageHeader } from "../../components/PageHeader";
@@ -107,242 +106,147 @@ export function Bitrix24Wizard() {
           </Button>
         }
       />
-      <div className="mx-auto max-w-2xl space-y-6 p-8">
-        <div className="rounded-lg border border-slate-200 bg-white p-6">
-          <h2 className="mb-3 text-base font-semibold tracking-tight">
-            Способ подключения
-          </h2>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <ModeCard
-              active={mode === "local"}
-              onClick={() => setMode("local")}
-              icon={<KeyRound className="h-5 w-5" />}
-              title="Локальное приложение"
-              description="У вас своё локальное приложение в Bitrix24. Введите его client_id и client_secret."
-            />
-            <ModeCard
-              active={mode === "marketplace"}
-              onClick={() => setMode("marketplace")}
-              icon={<Store className="h-5 w-5" />}
-              title="Marketplace"
-              description="Установите наше приложение из Bitrix24 Marketplace — токены придут автоматически."
-              soon
-            />
+      <div className="mx-auto max-w-xl space-y-4 p-8">
+        <div className="rounded-lg border border-slate-200 bg-white p-6 space-y-4">
+          {!hasGlobalCreds && (
+            <div className="flex gap-2 text-xs">
+              <button
+                type="button"
+                onClick={() => setMode("local")}
+                className={cn(
+                  "rounded-md px-2.5 py-1 transition",
+                  mode === "local"
+                    ? "bg-brand-50 text-brand-700"
+                    : "text-slate-500 hover:bg-slate-100",
+                )}
+              >
+                <KeyRound className="mr-1 inline h-3 w-3" />
+                Локальное приложение
+              </button>
+              <button
+                type="button"
+                onClick={() => setMode("marketplace")}
+                className={cn(
+                  "rounded-md px-2.5 py-1 transition",
+                  mode === "marketplace"
+                    ? "bg-brand-50 text-brand-700"
+                    : "text-slate-400 hover:bg-slate-100",
+                )}
+              >
+                <Store className="mr-1 inline h-3 w-3" />
+                Marketplace · скоро
+              </button>
+            </div>
+          )}
+
+          <Input
+            label="Домен портала"
+            placeholder="mycompany.bitrix24.ru"
+            value={domain}
+            onChange={(e) => setDomain(e.target.value)}
+            error={
+              domain && !domainValid ? "Некорректный домен Bitrix24" : undefined
+            }
+          />
+          <Input
+            label="Название"
+            placeholder="необязательно"
+            value={label}
+            onChange={(e) => setLabel(e.target.value)}
+          />
+
+          {mode === "local" && !hasGlobalCreds && (
+            <>
+              <Input
+                label="client_id"
+                placeholder="local.6a09ef866cbe83.16916660"
+                value={clientId}
+                onChange={(e) => setClientId(e.target.value)}
+              />
+              <Input
+                label="client_secret"
+                type="password"
+                placeholder="••••••••"
+                value={clientSecret}
+                onChange={(e) => setClientSecret(e.target.value)}
+              />
+            </>
+          )}
+
+          {notInstalled && (
+            <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              <div className="flex items-start gap-2">
+                <AlertTriangle className="h-4 w-4 shrink-0" />
+                <div>{notInstalled.message}</div>
+              </div>
+              <a
+                href={notInstalled.install_instructions_url}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-sm font-medium text-amber-900 underline"
+              >
+                Открыть инструкцию <ExternalLink className="h-3 w-3" />
+              </a>
+            </div>
+          )}
+
+          {apiError && !notInstalled && (
+            <div className="flex items-start gap-2 rounded-md bg-rose-50 p-3 text-sm text-rose-700">
+              <AlertTriangle className="h-4 w-4 shrink-0" />
+              <div>{apiError.message}</div>
+            </div>
+          )}
+
+          <div className="flex justify-end pt-1">
+            <Button
+              onClick={handleSubmit}
+              disabled={!domainValid || !credsValid || connect.isPending}
+            >
+              {connect.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Подключение…
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="h-4 w-4" /> Подключить
+                </>
+              )}
+            </Button>
           </div>
         </div>
 
-        <div className="rounded-lg border border-slate-200 bg-white p-6">
-          <h2 className="text-base font-semibold tracking-tight">
-            {mode === "local"
-              ? "Шаг 1. Создайте локальное приложение в Bitrix24"
-              : "Шаг 1. Установите приложение из Marketplace"}
-          </h2>
-          {mode === "local" ? (
-            <div className="mt-1 space-y-2 text-sm text-slate-500">
-              <p>
-                В Bitrix24:{" "}
-                <span className="font-medium text-slate-700">
-                  Разработчикам → Другое → Локальное приложение
-                </span>
-                . Тип:{" "}
-                <span className="font-medium text-slate-700">
-                  «Серверное (использует только API)»
-                </span>
-                .
-              </p>
-              <p>
-                Поле{" "}
-                <span className="font-medium text-slate-700">
-                  «Путь для первоначальной установки»
-                </span>
-                :
-              </p>
-              <code className="block rounded bg-slate-100 px-2 py-1.5 text-xs">
+        <details className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm text-slate-600 [&_summary]:cursor-pointer [&_summary]:font-medium [&_summary]:text-slate-700 [&[open]_summary]:mb-3">
+          <summary>Как создать локальное приложение в Bitrix24</summary>
+          <ol className="list-decimal space-y-1.5 pl-5 text-sm text-slate-500">
+            <li>
+              На портале:{" "}
+              <span className="text-slate-700">
+                Разработчикам → Другое → Локальное приложение
+              </span>
+              . Тип — «Серверное».
+            </li>
+            <li>
+              Путь для первоначальной установки:
+              <code className="ml-1 rounded bg-slate-100 px-1.5 py-0.5 text-xs">
                 {installUrl}
               </code>
-              <p>
-                Права доступа (scope):{" "}
-                <code className="rounded bg-slate-100 px-1">imopenlines</code>,{" "}
-                <code className="rounded bg-slate-100 px-1">im</code>,{" "}
-                <code className="rounded bg-slate-100 px-1">user</code>,{" "}
-                <code className="rounded bg-slate-100 px-1">event</code>,{" "}
-                <code className="rounded bg-slate-100 px-1">crm</code>.
-              </p>
-              <p>
-                После сохранения приложения скопируйте{" "}
-                <code className="rounded bg-slate-100 px-1">client_id</code> и{" "}
-                <code className="rounded bg-slate-100 px-1">client_secret</code>.
-              </p>
-            </div>
-          ) : (
-            <p className="mt-1 text-sm text-slate-500">
-              Откройте на своём портале{" "}
-              <span className="font-medium text-slate-700">
-                Маркет → Поиск приложений
-              </span>
-              , найдите{" "}
-              <span className="font-medium text-slate-700">«ai-message»</span> и
-              нажмите «Установить».
-            </p>
-          )}
-        </div>
-
-        <div className="rounded-lg border border-slate-200 bg-white p-6">
-          <h2 className="text-base font-semibold tracking-tight">
-            Шаг 2. Параметры подключения
-          </h2>
-          <div className="mt-4 space-y-4">
-            <Input
-              label="Домен портала"
-              placeholder="mycompany.bitrix24.ru"
-              value={domain}
-              onChange={(e) => setDomain(e.target.value)}
-              hint="Формат: <название>.bitrix24.<ru/com/de/...>"
-              error={
-                domain && !domainValid
-                  ? "Некорректный домен Bitrix24"
-                  : undefined
-              }
-            />
-            <Input
-              label="Название (необязательно)"
-              placeholder="Например: Главный портал"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-            />
-
-            {mode === "local" && hasGlobalCreds && (
-              <div className="rounded-md border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-800">
-                <div className="flex items-start gap-2">
-                  <CheckCircle2 className="h-4 w-4 shrink-0" />
-                  <div>
-                    Глобальные client_id/secret уже сконфигурированы на сервере
-                    (BITRIX24_APP_CLIENT_ID). Вводить ничего не нужно — мы
-                    используем их автоматически.
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {mode === "local" && !hasGlobalCreds && (
-              <>
-                <Input
-                  label="client_id"
-                  placeholder="local.6a09ef866cbe83.16916660"
-                  value={clientId}
-                  onChange={(e) => setClientId(e.target.value)}
-                  hint="Скопируйте из карточки локального приложения в Bitrix24."
-                />
-                <Input
-                  label="client_secret"
-                  type="password"
-                  placeholder="••••••••"
-                  value={clientSecret}
-                  onChange={(e) => setClientSecret(e.target.value)}
-                  hint="Хранится у нас на сервере, используется для обновления токенов."
-                />
-              </>
-            )}
-
-            {notInstalled && (
-              <div className="space-y-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="h-4 w-4 shrink-0" />
-                  <div>{notInstalled.message}</div>
-                </div>
-                <a
-                  href={notInstalled.install_instructions_url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 text-sm font-medium text-amber-900 underline"
-                >
-                  Открыть инструкцию <ExternalLink className="h-3 w-3" />
-                </a>
-              </div>
-            )}
-
-            {apiError && !notInstalled && (
-              <div className="flex items-start gap-2 rounded-md bg-rose-50 p-3 text-sm text-rose-700">
-                <AlertTriangle className="h-4 w-4 shrink-0" />
-                <div>{apiError.message}</div>
-              </div>
-            )}
-
-            <div className="flex justify-end pt-2">
-              <Button
-                onClick={handleSubmit}
-                disabled={!domainValid || !credsValid || connect.isPending}
-              >
-                {connect.isPending ? (
-                  <>
-                    <Loader2 className="h-4 w-4 animate-spin" /> Подключение…
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle2 className="h-4 w-4" /> Подключить
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 rounded-md border border-slate-200 bg-slate-50 p-3 text-xs text-slate-500">
-          <Plug className="h-4 w-4" />
-          {mode === "local"
-            ? "После подключения установите/переустановите ваше локальное приложение в Битриксе — токены автоматически прилетят к нам и привяжутся к интеграции."
-            : "После подключения ai-message подтянет историю переписки и будет обновлять новые сообщения каждые 30 секунд."}
-        </div>
+            </li>
+            <li>
+              Права:{" "}
+              <code className="rounded bg-slate-100 px-1 text-xs">imopenlines</code>,{" "}
+              <code className="rounded bg-slate-100 px-1 text-xs">im</code>,{" "}
+              <code className="rounded bg-slate-100 px-1 text-xs">user</code>,{" "}
+              <code className="rounded bg-slate-100 px-1 text-xs">event</code>,{" "}
+              <code className="rounded bg-slate-100 px-1 text-xs">crm</code>
+            </li>
+            <li>
+              Сохраните приложение — токены прилетят автоматически, статус
+              станет «подключено».
+            </li>
+          </ol>
+        </details>
       </div>
     </>
   );
 }
 
-function ModeCard({
-  active,
-  onClick,
-  icon,
-  title,
-  description,
-  soon,
-}: {
-  active: boolean;
-  onClick: () => void;
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  soon?: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex items-start gap-3 rounded-md border p-4 text-left transition",
-        active
-          ? "border-brand-500 bg-brand-50 ring-2 ring-brand-100"
-          : "border-slate-200 bg-white hover:border-slate-300",
-      )}
-    >
-      <div
-        className={cn(
-          "grid h-9 w-9 shrink-0 place-items-center rounded-md",
-          active ? "bg-brand-600 text-white" : "bg-slate-100 text-slate-600",
-        )}
-      >
-        {icon}
-      </div>
-      <div className="flex-1">
-        <div className="flex items-center gap-2">
-          <span className="font-medium">{title}</span>
-          {soon && (
-            <span className="rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-500">
-              скоро
-            </span>
-          )}
-        </div>
-        <p className="mt-1 text-sm text-slate-500">{description}</p>
-      </div>
-    </button>
-  );
-}

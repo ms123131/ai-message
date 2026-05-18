@@ -12,7 +12,7 @@ import { useAuth } from "../lib/auth";
 
 const nav = [
   { to: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
-  { to: "/inbox", label: "Inbox", icon: Inbox },
+  { to: "/inbox", label: "Диалоги", icon: Inbox },
   { to: "/integrations", label: "Интеграции", icon: Plug },
   { to: "/settings", label: "Настройки", icon: Settings },
 ];
