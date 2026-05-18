@@ -247,11 +247,21 @@ export const api = {
   deleteIntegration: (id: string) =>
     request<void>(`/api/v1/integrations/${id}`, { method: "DELETE" }),
 
-  connectBitrix24: (body: { domain: string; label?: string }) =>
+  connectBitrix24: (body: {
+    domain: string;
+    label?: string;
+    client_id?: string;
+    client_secret?: string;
+  }) =>
     request<Integration>("/api/v1/integrations/bitrix24/connect", {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  getBitrix24Config: () =>
+    request<{ has_global_credentials: boolean; install_url: string }>(
+      "/api/v1/integrations/bitrix24/config",
+    ),
 
   // --- Conversations / Dashboard ---
   listConversations: (params: {

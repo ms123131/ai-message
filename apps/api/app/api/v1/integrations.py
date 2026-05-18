@@ -112,6 +112,22 @@ async def delete_integration(
     await session.commit()
 
 
+@router.get("/bitrix24/config")
+async def bitrix24_config() -> dict[str, Any]:
+    """Сообщает фронту, сконфигурировано ли глобальное приложение в .env.
+
+    Если `has_global_credentials=true`, UI может не требовать ввода
+    client_id/secret — сервер подставит их из BITRIX24_APP_CLIENT_ID/SECRET.
+    """
+    settings = get_settings()
+    return {
+        "has_global_credentials": bool(
+            settings.bitrix24_app_client_id and settings.bitrix24_app_client_secret
+        ),
+        "install_url": _install_url(),
+    }
+
+
 @router.post(
     "/bitrix24/connect",
     response_model=IntegrationOut,
@@ -134,9 +150,34 @@ async def connect_bitrix24(
 
     Если интеграции нет — возвращаем 404 с инструкцией поставить приложение.
     """
+    import secrets
+
+    from app.db.models import IntegrationKind, IntegrationMode
+
     domain = _normalize_domain(body.domain)
     if not domain:
         raise HTTPException(status_code=400, detail="Domain is required")
+
+    # client_id и client_secret должны идти парой.
+    if bool(body.client_id) != bool(body.client_secret):
+        raise HTTPException(
+            status_code=400,
+            detail="client_id и client_secret должны быть указаны вместе",
+        )
+
+    # Если в body нет credentials — пробуем глобальные из .env
+    # (BITRIX24_APP_CLIENT_ID/SECRET). Это позволяет «одним приложением
+    # на всех клиентов» работать в режиме локального приложения:
+    # клиент только вводит домен, а секреты подставляются из конфига.
+    effective_client_id = body.client_id
+    effective_client_secret = body.client_secret
+    if not effective_client_id and not effective_client_secret:
+        settings = get_settings()
+        if settings.bitrix24_app_client_id and settings.bitrix24_app_client_secret:
+            effective_client_id = settings.bitrix24_app_client_id
+            effective_client_secret = settings.bitrix24_app_client_secret
+
+    is_local_app = bool(effective_client_id and effective_client_secret)
 
     integration = (
         await session.execute(
@@ -144,31 +185,56 @@ async def connect_bitrix24(
         )
     ).scalar_one_or_none()
 
-    if not integration:
-        # Хочется 404 с тегом not_installed, а не «не найдено».
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "status": "not_installed",
-                "domain": domain,
-                "install_instructions_url": _install_url(),
-                "message": (
-                    "Приложение ai-message не установлено на этом портале. "
-                    "Установите его из Bitrix24 Marketplace, затем повторите подключение."
-                ),
-            },
-        )
-
-    if integration.tenant_id and integration.tenant_id != user.tenant_id:
+    if integration and integration.tenant_id and integration.tenant_id != user.tenant_id:
         raise HTTPException(
             status_code=409,
             detail="Этот портал уже подключён к другому рабочему пространству",
         )
 
-    integration.tenant_id = user.tenant_id
-    if body.label:
-        integration.label = body.label
-    integration.status = IntegrationStatus.connected
+    if not integration:
+        if not is_local_app:
+            # Marketplace-сценарий: ждём, пока клиент поставит наше тиражное
+            # приложение — без этого мы не получим токены.
+            raise HTTPException(
+                status_code=404,
+                detail={
+                    "status": "not_installed",
+                    "domain": domain,
+                    "install_instructions_url": _install_url(),
+                    "message": (
+                        "Приложение ai-message не установлено на этом портале. "
+                        "Установите его из Bitrix24 Marketplace, затем повторите подключение."
+                    ),
+                },
+            )
+        # Local-сценарий: создаём заготовку с client_id/secret и сразу
+        # привязываем к tenant'у. Токены прилетят в install-handler, когда
+        # клиент создаст/переустановит локальное приложение на портале.
+        integration = Integration(
+            id=f"b24_{secrets.token_urlsafe(8).lower()}",
+            tenant_id=user.tenant_id,
+            kind=IntegrationKind.bitrix24,
+            mode=IntegrationMode.oauth,
+            label=body.label or domain,
+            domain=domain,
+            status=IntegrationStatus.pending,
+            client_id=effective_client_id,
+            client_secret=effective_client_secret,
+        )
+        session.add(integration)
+    else:
+        integration.tenant_id = user.tenant_id
+        if body.label:
+            integration.label = body.label
+        if is_local_app:
+            integration.client_id = effective_client_id
+            integration.client_secret = effective_client_secret
+        # status: connected если уже есть токены, иначе pending.
+        if integration.access_token and integration.refresh_token:
+            integration.status = IntegrationStatus.connected
+        else:
+            integration.status = IntegrationStatus.pending
+
     await session.commit()
     await session.refresh(integration)
     return integration
