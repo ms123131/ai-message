@@ -24,9 +24,26 @@ from app.db.models import ConversationStatus
 from app.integrations.bitrix24.importer import (
     _channel_from_entity_id,
     _session_is_closed,
+    _session_meta,
     import_open_lines,
     run_import_job,
 )
+
+
+def test_session_meta_extracts_operator_and_line():
+    operator, line = _session_meta(
+        {"session": {"OPERATOR_ID": 42, "CONFIG_ID": "7"}}
+    )
+    assert operator == "42"
+    assert line == "7"
+
+    # Пустые/нулевые значения трактуем как «не задано».
+    operator, line = _session_meta({"session": {"OPERATOR_ID": 0, "CONFIG_ID": ""}})
+    assert operator is None
+    assert line is None
+
+    # Нет блока session — оба None.
+    assert _session_meta({}) == (None, None)
 
 
 def test_session_is_closed_by_status():
@@ -280,6 +297,66 @@ async def test_reopens_conversation_when_status_drops(client):  # noqa: ARG001
     async with AsyncSessionLocal() as session:
         conv = (await session.execute(select(Conversation))).scalar_one()
         assert conv.status == ConversationStatus.open
+
+
+@pytest.mark.asyncio
+async def test_import_computes_response_time_and_operator(client):  # noqa: ARG001
+    """После импорта у диалога заполнены FRT, operator_id и line_id."""
+    integration_id = await _make_integration()
+    base_ts = datetime(2026, 5, 1, 10, 0, 0, tzinfo=UTC)
+
+    def iso(seconds: int) -> str:
+        return (base_ts + timedelta(seconds=seconds)).isoformat()
+
+    history = {
+        "chatId": 42,
+        "sessionId": 4242,
+        "session": {"STATUS": 40, "OPERATOR_ID": "99", "CONFIG_ID": "3"},
+        "message": {
+            "1": {
+                "id": "1",
+                "senderid": "200",
+                "date": iso(0),
+                "text": "клиент пишет",
+            },
+            # 90 секунд спустя — первый ответ оператора.
+            "2": {
+                "id": "2",
+                "senderid": "99",
+                "date": iso(90),
+                "text": "оператор отвечает",
+            },
+            "3": {
+                "id": "3",
+                "senderid": "200",
+                "date": iso(150),
+                "text": "клиент ещё",
+            },
+        },
+        "users": {
+            "200": {"id": "200", "name": "Клиент", "connector": True},
+            "99": {"id": "99", "name": "Оператор"},
+        },
+        "chat": {"42": {"id": "42", "entityId": "livechat|1|1|200"}},
+    }
+    fake = FakeClient(
+        {
+            "im.recent.get": [{"chat_id": 42, "date_last_activity": _now_iso(0)}],
+            "imopenlines.session.history.get:42": history,
+        }
+    )
+
+    async with AsyncSessionLocal() as session:
+        integration = await session.get(Integration, integration_id)
+        await import_open_lines(fake, session, integration, days=30)
+
+    async with AsyncSessionLocal() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+        assert conv.assigned_user_id == "99"
+        assert conv.line_id == "3"
+        assert conv.first_message_at is not None
+        assert conv.first_agent_reply_at is not None
+        assert conv.response_time_sec == 90
 
 
 @pytest.mark.asyncio

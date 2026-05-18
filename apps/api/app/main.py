@@ -48,6 +48,15 @@ async def _ensure_schema_patches() -> None:
         # Фаза 4.5: webhook-режим интеграции удалён — чистим старые записи,
         # иначе SQLAlchemy не сможет загрузить их (значения нет в enum).
         "DELETE FROM integrations WHERE mode::text = 'webhook'",
+        # Фаза 5 (дашборд): расширение Conversation для аналитики.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS assigned_user_id VARCHAR(128)",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS line_id VARCHAR(64)",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS first_message_at TIMESTAMPTZ",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS first_agent_reply_at TIMESTAMPTZ",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS closed_at TIMESTAMPTZ",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS response_time_sec INTEGER",
+        "CREATE INDEX IF NOT EXISTS ix_conversations_integration_assigned ON conversations(integration_id, assigned_user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_conversations_integration_status_updated ON conversations(integration_id, status, updated_at)",
     ]
     async with engine.begin() as conn:
         for stmt in statements:

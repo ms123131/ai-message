@@ -120,6 +120,30 @@ def _sender_type(msg: dict[str, Any], users: dict[str, Any] | None) -> SenderTyp
 _BITRIX_SESSION_CLOSED_STATUS = 80
 
 
+def _session_meta(history: dict[str, Any]) -> tuple[str | None, str | None]:
+    """Возвращает (operator_id, line_id) из блока session.
+
+    Bitrix24 в `imopenlines.session.history.get`:
+      session.OPERATOR_ID — оператор открытой линии (id Bitrix-пользователя)
+      session.CONFIG_ID   — id открытой линии (config)
+    Если блока нет — оба значения None.
+    """
+    session = history.get("session")
+    if not isinstance(session, dict):
+        return None, None
+
+    def _g(*keys: str) -> str | None:
+        for k in keys:
+            v = session.get(k)
+            if v not in (None, "", 0, "0"):
+                return str(v)
+        return None
+
+    operator_id = _g("OPERATOR_ID", "operator_id")
+    line_id = _g("CONFIG_ID", "config_id", "LINE_ID", "line_id")
+    return operator_id, line_id
+
+
 def _session_is_closed(history: dict[str, Any]) -> bool:
     """Определяет закрытость сессии Open Channels по полю STATUS.
 
@@ -157,6 +181,8 @@ async def _upsert_conversation(
     contact_name: str | None,
     contact_external_id: str | None,
     is_closed: bool,
+    assigned_user_id: str | None = None,
+    line_id: str | None = None,
 ) -> Conversation:
     existing = await session.execute(
         select(Conversation).where(
@@ -165,18 +191,28 @@ async def _upsert_conversation(
         )
     )
     conv = existing.scalar_one_or_none()
+    target_status = (
+        ConversationStatus.closed if is_closed else ConversationStatus.open
+    )
     if conv:
         if contact_name and not conv.contact_name:
             conv.contact_name = contact_name
         if contact_external_id and not conv.contact_external_id:
             conv.contact_external_id = contact_external_id
+        if assigned_user_id and conv.assigned_user_id != assigned_user_id:
+            conv.assigned_user_id = assigned_user_id
+        if line_id and conv.line_id != line_id:
+            conv.line_id = line_id
         # Синхронизируем статус в обе стороны: закрытый стал открытым (новое
         # сообщение в закрытый диалог) и наоборот.
-        target_status = (
-            ConversationStatus.closed if is_closed else ConversationStatus.open
-        )
         if conv.status != target_status:
             conv.status = target_status
+            if target_status == ConversationStatus.closed and conv.closed_at is None:
+                conv.closed_at = datetime.now(UTC)
+            elif target_status == ConversationStatus.open:
+                # Если диалог переоткрылся — closed_at сбрасываем; новый
+                # closed_at установится при следующем закрытии.
+                conv.closed_at = None
         return conv
 
     conv = Conversation(
@@ -186,11 +222,56 @@ async def _upsert_conversation(
         channel=channel,
         contact_name=contact_name,
         contact_external_id=contact_external_id,
-        status=ConversationStatus.closed if is_closed else ConversationStatus.open,
+        status=target_status,
+        assigned_user_id=assigned_user_id,
+        line_id=line_id,
+        closed_at=datetime.now(UTC) if is_closed else None,
     )
     session.add(conv)
     await session.flush()
     return conv
+
+
+async def _recompute_conversation_analytics(
+    session: AsyncSession, conv: Conversation
+) -> None:
+    """Пересчитывает first_message_at / first_agent_reply_at / response_time_sec.
+
+    Считаем по фактическим сообщениям в БД (агрегирующий SELECT), чтобы цифры
+    были консистентны даже после переимпорта или backfill'а.
+    """
+    from sqlalchemy import func as sa_func
+
+    # Самое раннее клиентское сообщение.
+    first_client = (
+        await session.execute(
+            select(sa_func.min(Message.sent_at)).where(
+                Message.conversation_id == conv.id,
+                Message.sender_type == SenderType.client,
+            )
+        )
+    ).scalar_one_or_none()
+
+    first_agent: datetime | None = None
+    if first_client is not None:
+        # Первый ответ оператора/бота ПОСЛЕ первого клиентского сообщения.
+        first_agent = (
+            await session.execute(
+                select(sa_func.min(Message.sent_at)).where(
+                    Message.conversation_id == conv.id,
+                    Message.sender_type.in_([SenderType.agent, SenderType.bot]),
+                    Message.sent_at >= first_client,
+                )
+            )
+        ).scalar_one_or_none()
+
+    conv.first_message_at = first_client
+    conv.first_agent_reply_at = first_agent
+    if first_client and first_agent:
+        delta = (first_agent - first_client).total_seconds()
+        conv.response_time_sec = max(0, int(delta))
+    else:
+        conv.response_time_sec = None
 
 
 async def _insert_messages(
@@ -302,6 +383,7 @@ async def import_open_lines(
         contact_name, contact_external_id = _extract_contact(users, chat_meta)
         channel = _channel_from_entity_id(chat_meta.get("entityId") or chat_meta.get("entity_id"))
         is_closed = _session_is_closed(history)
+        operator_id, line_id = _session_meta(history)
 
         conv = await _upsert_conversation(
             session,
@@ -311,8 +393,11 @@ async def import_open_lines(
             contact_name=contact_name,
             contact_external_id=contact_external_id,
             is_closed=is_closed,
+            assigned_user_id=operator_id,
+            line_id=line_id,
         )
         inserted = await _insert_messages(session, conv, history)
+        await _recompute_conversation_analytics(session, conv)
         stats.sessions += 1
         stats.messages += inserted
         await session.flush()

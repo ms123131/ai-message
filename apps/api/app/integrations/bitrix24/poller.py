@@ -23,6 +23,7 @@ from app.db.models import Integration, IntegrationMode, IntegrationStatus
 from app.db.session import AsyncSessionLocal
 from app.integrations.bitrix24.client import BitrixClient
 from app.integrations.bitrix24.importer import import_open_lines
+from app.integrations.bitrix24.users_sync import sync_portal_users_if_stale
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +52,8 @@ async def _poll_once(window_days: int) -> None:
                     stats = await import_open_lines(
                         client, session, fresh, days=window_days
                     )
+                    # Раз в сутки — обновляем кэш операторов.
+                    await sync_portal_users_if_stale(client, session, fresh)
                 if stats.messages:
                     logger.info(
                         "poll: integration=%s +sessions=%d +messages=%d",
