@@ -52,13 +52,13 @@ export function ManagersTab({ filters }: { filters: DashboardFilters }) {
 
   return (
     <div className="space-y-6">
-      {/* Гистограмма FRT по топ-10 */}
+      {/* Гистограмма медианного времени первого ответа по топ-10 */}
       <div className="rounded-lg border border-slate-200 bg-white p-5">
         <div className="mb-2 text-sm font-medium text-slate-700">
-          Медианное время ответа (FRT)
+          Время первого ответа (медиана)
         </div>
         <div className="mb-4 text-xs text-slate-400">
-          Чем ниже — тем быстрее оператор берёт первый ответ. Топ-10 по числу диалогов.
+          Чем ниже — тем быстрее оператор берёт диалог в работу. Топ-10 по числу диалогов.
         </div>
         <ResponsiveContainer width="100%" height={280}>
           <BarChart data={chartData} layout="vertical" margin={{ left: 60 }}>
@@ -84,7 +84,7 @@ export function ManagersTab({ filters }: { filters: DashboardFilters }) {
               }}
               formatter={(v: number, key: string) =>
                 key === "frt"
-                  ? [fmtDuration(v), "FRT медиана"]
+                  ? [fmtDuration(v), "Время ответа (медиана)"]
                   : [v, "Диалогов"]
               }
             />
@@ -104,8 +104,12 @@ export function ManagersTab({ filters }: { filters: DashboardFilters }) {
               <th className="px-4 py-3 text-right font-medium">
                 Сообщений отправил
               </th>
-              <th className="px-4 py-3 text-right font-medium">FRT медиана</th>
-              <th className="px-4 py-3 text-right font-medium">FRT 90-й</th>
+              <th className="px-4 py-3 text-right font-medium">
+                Время ответа (медиана)
+              </th>
+              <th className="px-4 py-3 text-right font-medium">
+                Самые медленные (90%)
+              </th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
