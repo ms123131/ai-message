@@ -104,6 +104,7 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
             label="Сообщений на диалог"
             kpi={o?.avg_messages_per_conv}
             loading={overviewQ.isLoading}
+            hint="среднее"
           />
         </div>
       </Section>
@@ -112,23 +113,23 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
       <Section title="Качество обслуживания">
         <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
           <KPICard
-            label="FRT медиана"
+            label="Время первого ответа"
             kpi={o?.frt_median_sec}
             format="duration"
             higherIsBetter={false}
             loading={overviewQ.isLoading}
-            hint="первый ответ агента"
+            hint="медиана"
           />
           <KPICard
-            label="FRT 90-й перцентиль"
+            label="Самые медленные ответы"
             kpi={o?.frt_p90_sec}
             format="duration"
             higherIsBetter={false}
             loading={overviewQ.isLoading}
-            hint="самые медленные 10%"
+            hint="90-й перцентиль (10% худших)"
           />
           <KPICard
-            label="Время решения"
+            label="Время решения вопроса"
             kpi={o?.resolution_median_sec}
             format="duration"
             higherIsBetter={false}
@@ -136,11 +137,11 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
             hint="медиана"
           />
           <KPICard
-            label="Возвратных контактов"
+            label="Возвратные клиенты"
             kpi={o?.returning_contacts_pct}
             format="percent"
             loading={overviewQ.isLoading}
-            hint="% c >1 обращением"
+            hint="% с более чем одним обращением"
           />
         </div>
       </Section>
@@ -239,7 +240,7 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
 
       {/* Heatmap + SLA */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <Card title="Когда пишут клиенты" className="xl:col-span-2">
+        <Card title="Время активности клиентов" className="xl:col-span-2">
           <Heatmap cells={heatmapQ.data?.cells ?? []} loading={heatmapQ.isLoading} />
         </Card>
 

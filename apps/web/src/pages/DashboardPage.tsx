@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   LineChart as LineChartIcon,
   Plug,
@@ -27,8 +27,23 @@ const TABS: Array<{ id: TabId; label: string; icon: typeof LineChartIcon; soon?:
   { id: "ai", label: "AI-аналитика", icon: Sparkles, soon: true },
 ];
 
+const TAB_IDS: readonly TabId[] = ["overview", "managers", "contacts", "ai"];
+
+function isTab(v: string | null): v is TabId {
+  return v !== null && (TAB_IDS as readonly string[]).includes(v);
+}
+
 export function DashboardPage() {
-  const [tab, setTab] = useState<TabId>("overview");
+  // Активный таб храним в URL — переживает refresh и работает с history back.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlTab = searchParams.get("tab");
+  const tab: TabId = isTab(urlTab) ? urlTab : "overview";
+  function setTab(next: TabId) {
+    const params = new URLSearchParams(searchParams);
+    if (next === "overview") params.delete("tab");
+    else params.set("tab", next);
+    setSearchParams(params, { replace: true });
+  }
   const [filters, setFilters] = useState<DashboardFilters>({ days: 14 });
 
   const integrationsQ = useQuery({
