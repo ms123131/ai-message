@@ -75,7 +75,7 @@ export function InboxPage() {
   if (integrationsQ.isLoading) {
     return (
       <>
-        <PageHeader title="Inbox" />
+        <PageHeader title="Диалоги" />
         <Center>
           <Loader2 className="h-5 w-5 animate-spin text-slate-400" />
         </Center>
@@ -86,11 +86,11 @@ export function InboxPage() {
   if (integrationsQ.isSuccess && (integrationsQ.data ?? []).length === 0) {
     return (
       <>
-        <PageHeader title="Inbox" />
+        <PageHeader title="Диалоги" />
         <EmptyState
           icon={<Plug className="h-6 w-6 text-brand-600" />}
           title="Нет подключённых источников"
-          description="Подключите Bitrix24, чтобы здесь появились реальные диалоги из Open Channels."
+          description="Подключите Bitrix24 — здесь появятся диалоги из открытых линий."
           action={
             <Link to="/integrations/bitrix24/new">
               <Button>Подключить Bitrix24</Button>
@@ -104,7 +104,7 @@ export function InboxPage() {
   return (
     <>
       <PageHeader
-        title="Inbox"
+        title="Диалоги"
         description="Объединённая лента диалогов из всех подключённых каналов"
       />
       <div className="grid h-[calc(100%-77px)] grid-cols-[360px_1fr]">

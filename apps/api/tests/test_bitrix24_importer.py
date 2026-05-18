@@ -20,11 +20,25 @@ from app.db.models import (
     SenderType,
 )
 from app.db.session import AsyncSessionLocal
+from app.db.models import ConversationStatus
 from app.integrations.bitrix24.importer import (
     _channel_from_entity_id,
+    _session_is_closed,
     import_open_lines,
     run_import_job,
 )
+
+
+def test_session_is_closed_by_status():
+    """STATUS>=80 → закрыта; STATUS<80 или пусто → открыта."""
+    assert _session_is_closed({"session": {"STATUS": 80}}) is True
+    assert _session_is_closed({"session": {"STATUS": 90}}) is True
+    assert _session_is_closed({"session": {"STATUS": 40}}) is False
+    assert _session_is_closed({"session": {"STATUS": "25"}}) is False
+    assert _session_is_closed({"session": {}}) is False
+    assert _session_is_closed({}) is False
+    # counter==0 в im.recent.get больше не должен влиять — это другой сигнал.
+    assert _session_is_closed({"sessionId": 555}) is False
 
 
 class FakeClient:
@@ -189,6 +203,83 @@ async def test_import_is_idempotent(client):  # noqa: ARG001
         msgs = (await session.execute(select(Message))).scalars().all()
         assert len(convs) == 1
         assert len(msgs) == 1
+
+
+@pytest.mark.asyncio
+async def test_active_session_stays_open_when_unread_zero(client):  # noqa: ARG001
+    """Активный диалог (counter==0, нет session.STATUS>=80) остаётся open."""
+    integration_id = await _make_integration()
+    history = {
+        "chatId": 77,
+        "sessionId": 777,
+        "session": {"STATUS": 40},  # активная сессия
+        "message": {
+            "1": {"id": "1", "senderid": "10", "date": _now_iso(0), "text": "hi"}
+        },
+        "users": {"10": {"id": "10", "name": "C", "connector": True}},
+        "chat": {"77": {"id": "77", "entityId": "livechat|1|1|10"}},
+    }
+    fake = FakeClient(
+        {
+            "im.recent.get": [
+                {"chat_id": 77, "date_last_activity": _now_iso(0), "counter": 0}
+            ],
+            "imopenlines.session.history.get:77": history,
+        }
+    )
+
+    async with AsyncSessionLocal() as session:
+        integration = await session.get(Integration, integration_id)
+        await import_open_lines(fake, session, integration, days=30)
+
+    async with AsyncSessionLocal() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+        assert conv.status == ConversationStatus.open
+
+
+@pytest.mark.asyncio
+async def test_reopens_conversation_when_status_drops(client):  # noqa: ARG001
+    """Если ранее закрытый диалог снова стал активным — статус возвращается в open."""
+    integration_id = await _make_integration()
+    base = {
+        "chatId": 88,
+        "sessionId": 888,
+        "message": {
+            "1": {"id": "1", "senderid": "10", "date": _now_iso(0), "text": "hi"}
+        },
+        "users": {"10": {"id": "10", "name": "C", "connector": True}},
+        "chat": {"88": {"id": "88", "entityId": "livechat|1|1|10"}},
+    }
+
+    # 1-й проход: закрытая сессия.
+    fake1 = FakeClient(
+        {
+            "im.recent.get": [{"chat_id": 88, "date_last_activity": _now_iso(0)}],
+            "imopenlines.session.history.get:88": {**base, "session": {"STATUS": 80}},
+        }
+    )
+    async with AsyncSessionLocal() as session:
+        integration = await session.get(Integration, integration_id)
+        await import_open_lines(fake1, session, integration, days=30)
+
+    async with AsyncSessionLocal() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+        assert conv.status == ConversationStatus.closed
+
+    # 2-й проход: статус стал активным — диалог должен переоткрыться.
+    fake2 = FakeClient(
+        {
+            "im.recent.get": [{"chat_id": 88, "date_last_activity": _now_iso(0)}],
+            "imopenlines.session.history.get:88": {**base, "session": {"STATUS": 25}},
+        }
+    )
+    async with AsyncSessionLocal() as session:
+        integration = await session.get(Integration, integration_id)
+        await import_open_lines(fake2, session, integration, days=30)
+
+    async with AsyncSessionLocal() as session:
+        conv = (await session.execute(select(Conversation))).scalar_one()
+        assert conv.status == ConversationStatus.open
 
 
 @pytest.mark.asyncio

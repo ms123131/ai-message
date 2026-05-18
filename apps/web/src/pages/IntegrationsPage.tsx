@@ -76,10 +76,7 @@ export function IntegrationsPage() {
         {isError && (
           <div className="flex items-start gap-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
             <AlertTriangle className="h-4 w-4 shrink-0" />
-            <div>
-              Не удалось загрузить подключения: {(error as Error).message}.
-              Запущен ли backend на VITE_API_URL?
-            </div>
+            <div>Не удалось загрузить подключения: {(error as Error).message}</div>
           </div>
         )}
 
