@@ -181,6 +181,105 @@ export type DashboardStats = {
   }>;
 };
 
+// Phase 4Б — расширенный дашборд.
+
+export type KPI = {
+  value: number;
+  delta_pct: number | null;
+  delta_abs: number | null;
+};
+
+export type DashboardOverview = {
+  range_days: number;
+  range_from: string;
+  range_to: string;
+  conversations: KPI;
+  messages: KPI;
+  open_now: number;
+  frt_median_sec: KPI;
+  frt_p90_sec: KPI;
+  resolution_median_sec: KPI;
+  unique_contacts: KPI;
+  returning_contacts_pct: KPI;
+  avg_messages_per_conv: KPI;
+};
+
+export type TimelinePoint = {
+  day: string;
+  conversations: number;
+  messages: number;
+};
+
+export type DashboardTimeline = {
+  range_days: number;
+  points: TimelinePoint[];
+};
+
+export type ByChannelSlice = {
+  channel: ConversationChannel;
+  conversations: number;
+  messages: number;
+};
+
+export type ByChannelResponse = { slices: ByChannelSlice[] };
+
+export type ManagerRow = {
+  operator_id: string;
+  full_name: string | null;
+  avatar_url: string | null;
+  work_position: string | null;
+  email: string | null;
+  conversations: number;
+  open_conversations: number;
+  frt_median_sec: number | null;
+  frt_p90_sec: number | null;
+  messages_sent: number;
+};
+
+export type ByManagerResponse = { rows: ManagerRow[] };
+
+export type HeatmapCell = { weekday: number; hour: number; count: number };
+export type HeatmapResponse = { cells: HeatmapCell[] };
+
+export type SLABreachItem = {
+  conversation_id: string;
+  contact_name: string | null;
+  channel: ConversationChannel;
+  minutes_waiting: number;
+  last_client_message_at: string;
+  operator_id: string | null;
+  operator_name: string | null;
+};
+export type SLABreachesResponse = {
+  threshold_minutes: number;
+  items: SLABreachItem[];
+};
+
+export type TopContactItem = {
+  contact_external_id: string | null;
+  contact_name: string | null;
+  conversations: number;
+  messages: number;
+  last_message_at: string | null;
+};
+export type TopContactsResponse = { items: TopContactItem[] };
+
+export type PortalUser = {
+  external_id: string;
+  full_name: string | null;
+  email: string | null;
+  work_position: string | null;
+  avatar_url: string | null;
+  is_active: boolean;
+};
+
+export type DashboardFilters = {
+  days?: number;
+  integration_id?: string;
+  channel?: ConversationChannel;
+  operator_id?: string;
+};
+
 export type UserRole = "admin" | "member";
 
 export type CurrentUser = {
@@ -280,4 +379,35 @@ export const api = {
 
   getDashboardStats: (params: { days?: number; integration_id?: string } = {}) =>
     request<DashboardStats>(`/api/v1/dashboard/stats${qs(params)}`),
+
+  // --- Dashboard (phase 4Б) ---
+  getDashboardOverview: (f: DashboardFilters = {}) =>
+    request<DashboardOverview>(`/api/v1/dashboard/overview${qs(f)}`),
+
+  getDashboardTimeline: (f: DashboardFilters = {}) =>
+    request<DashboardTimeline>(`/api/v1/dashboard/timeline${qs(f)}`),
+
+  getDashboardByChannel: (f: DashboardFilters = {}) =>
+    request<ByChannelResponse>(`/api/v1/dashboard/by-channel${qs(f)}`),
+
+  getDashboardByManager: (f: DashboardFilters & { limit?: number } = {}) =>
+    request<ByManagerResponse>(`/api/v1/dashboard/by-manager${qs(f)}`),
+
+  getDashboardHeatmap: (f: DashboardFilters = {}) =>
+    request<HeatmapResponse>(`/api/v1/dashboard/heatmap${qs(f)}`),
+
+  getDashboardSLABreaches: (
+    f: DashboardFilters & { threshold_minutes?: number; limit?: number } = {},
+  ) => request<SLABreachesResponse>(`/api/v1/dashboard/sla-breaches${qs(f)}`),
+
+  getDashboardTopContacts: (f: DashboardFilters & { limit?: number } = {}) =>
+    request<TopContactsResponse>(`/api/v1/dashboard/top-contacts${qs(f)}`),
+
+  getPortalUsers: (params: { integration_id?: string; only_active?: boolean } = {}) =>
+    request<PortalUser[]>(
+      `/api/v1/dashboard/portal-users${qs({
+        ...params,
+        only_active: params.only_active === false ? "false" : undefined,
+      } as Record<string, string | number | undefined | null>)}`,
+    ),
 };

@@ -7,6 +7,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Index,
+    Integer,
     String,
     Text,
     event,
@@ -190,6 +191,24 @@ class Conversation(Base):
         nullable=False,
     )
 
+    # Закреплённый оператор открытой линии (Bitrix24 OPERATOR_ID).
+    # Хранится как строка — Bitrix отдаёт числовой id, но в других каналах
+    # будет email/handle. Связь с PortalUser по (integration_id, external_id).
+    assigned_user_id: Mapped[str | None] = mapped_column(String(128))
+    # ID открытой линии (для разреза «по линиям» в аналитике).
+    line_id: Mapped[str | None] = mapped_column(String(64))
+
+    # Денормализованные таймстемпы для быстрой аналитики (FRT, AHT, объём).
+    # Заполняются импортером и поллером, индекс — на created_at уже есть.
+    first_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    first_agent_reply_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # First Response Time в секундах = first_agent_reply_at - first_message_at.
+    # Денормализован, чтобы AVG/PERCENTILE-запросы не считали разность каждый раз.
+    response_time_sec: Mapped[int | None] = mapped_column(Integer)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -214,6 +233,19 @@ class Conversation(Base):
             "ix_conversations_integration_created",
             "integration_id",
             "created_at",
+        ),
+        # Дашборд by-manager: фильтр по integration + assigned_user.
+        Index(
+            "ix_conversations_integration_assigned",
+            "integration_id",
+            "assigned_user_id",
+        ),
+        # Дашборд SLA: «активные диалоги без ответа» — статус + last_message.
+        Index(
+            "ix_conversations_integration_status_updated",
+            "integration_id",
+            "status",
+            "updated_at",
         ),
         # Дедупликация при импорте: один external_id на интеграцию.
         Index(
@@ -261,6 +293,47 @@ class Message(Base):
             unique=True,
             postgresql_where=sql_text("external_id IS NOT NULL"),
             sqlite_where=sql_text("external_id IS NOT NULL"),
+        ),
+    )
+
+
+class PortalUser(Base):
+    """Кэш сотрудников портала Bitrix24 (операторов открытых линий).
+
+    Заполняется фоновой синхронизацией через `user.get`. Используется
+    в дашборде для отображения имени/аватара по `Conversation.assigned_user_id`
+    и `Message.sender_external_id` без обращения к Bitrix24 на каждый рендер.
+    """
+
+    __tablename__ = "portal_users"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    integration_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("integrations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Идентификатор пользователя в Bitrix24 (числовой, но храним строкой).
+    external_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    full_name: Mapped[str | None] = mapped_column(String(255))
+    email: Mapped[str | None] = mapped_column(String(255))
+    work_position: Mapped[str | None] = mapped_column(String(255))
+    avatar_url: Mapped[str | None] = mapped_column(String(1024))
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+
+    last_synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_portal_users_integration_external",
+            "integration_id",
+            "external_id",
+            unique=True,
         ),
     )
 

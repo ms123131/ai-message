@@ -156,6 +156,47 @@ SaaS-приложение для анализа коммуникационных
 
 ---
 
+## Фаза 5 — Аналитический дашборд (расширение) ✅
+
+Цель: превратить сводный экран в реальный инструмент аналитики, который
+показывает то, чего нет в стандартных отчётах Bitrix24.
+
+### 5А Схема и сборщики
+- [x] Расширение `Conversation`: `assigned_user_id`, `line_id`,
+  `first_message_at`, `first_agent_reply_at`, `closed_at`, `response_time_sec`
+- [x] Индексы: `(integration_id, assigned_user_id)`, `(integration_id, status, updated_at)`
+- [x] Новая таблица `PortalUser` (кэш операторов Bitrix24)
+- [x] `_recompute_conversation_analytics` в импортере (FRT по фактическим сообщениям)
+- [x] `_session_meta` — извлекаем `OPERATOR_ID`/`CONFIG_ID` из session
+- [x] `users_sync.py` — `sync_portal_users_if_stale` раз в сутки в поллере
+
+### 5Б Backend API (8 эндпоинтов)
+- [x] `GET /dashboard/overview` — KPI с дельтами к прошлому периоду
+- [x] `GET /dashboard/timeline` — точки по дням
+- [x] `GET /dashboard/by-channel` — donut
+- [x] `GET /dashboard/by-manager` — таблица операторов с JOIN PortalUser
+- [x] `GET /dashboard/heatmap` — день недели × час
+- [x] `GET /dashboard/sla-breaches` — открытые диалоги без ответа > N минут
+- [x] `GET /dashboard/top-contacts` — топ контактов
+- [x] `GET /dashboard/portal-users` — справочник операторов
+- [x] Унифицированные фильтры: `days`, `integration_id`, `channel`, `operator_id`
+- [x] Алиас старого `/stats` сохранён для обратной совместимости
+
+### 5В Frontend
+- [x] `DashboardPage` с табами «Обзор / Менеджеры / Контакты / AI»
+- [x] `DashboardFilterBar` — период/портал/канал/оператор
+- [x] `KPICard` с дельтой ±% (зелёный/красный с учётом higherIsBetter)
+- [x] Overview: 8 KPI, area-chart, donut, heatmap, SLA-список
+- [x] Managers: bar chart FRT топ-10 + таблица всех операторов с аватарами
+- [x] Contacts: топ-30 с количеством диалогов и сообщений
+
+### 5Г AI-таб (заглушки «скоро»)
+- [x] Hero-блок с описанием будущего раздела
+- [x] 8 lock-карточек: sentiment, темы, аномалии, quality score,
+  авто-резюме, churn risk, авто-теги, weekly insights
+- [x] Превью-визуализации для каждой карточки
+- [x] Реальная NLP — отложена в фазу 6
+
 ## Фаза 4.5 — Wazzup-style подключение Bitrix24 ✅
 
 Цель: клиент НЕ вписывает client_id/secret вручную. Ставит наше тиражное
