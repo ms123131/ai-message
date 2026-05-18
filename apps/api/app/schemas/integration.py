@@ -25,14 +25,21 @@ class Bitrix24ConnectRequest(BaseModel):
     """
     Подключение портала по доменному имени.
 
-    Клиент сначала устанавливает наше приложение в Bitrix24, затем
-    приходит сюда и сообщает доменное имя своего портала. Мы ищем
-    готовую интеграцию (с уже сохранёнными токенами от install-handler)
-    по domain и закрепляем её за tenant'ом пользователя.
+    Два режима:
+    - Marketplace (без client_id/secret): клиент сначала ставит наше
+      тиражное приложение, потом приходит сюда с доменом. Мы ищем
+      готовую запись (создана install-handler'ом) и привязываем к tenant.
+    - Local (с client_id/secret): для клиентов с собственным локальным
+      приложением в B24. Сохраняем credentials в Integration; токены
+      прилетают позже в /install/bitrix24, когда клиент установит/
+      переустановит приложение на портале.
     """
 
     domain: str = Field(min_length=3, max_length=255)
     label: str | None = Field(default=None, max_length=200)
+    # Только для режима локального приложения.
+    client_id: str | None = Field(default=None, max_length=255)
+    client_secret: str | None = Field(default=None, max_length=255)
 
 
 class Bitrix24ConnectNotInstalled(BaseModel):
