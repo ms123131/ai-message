@@ -36,6 +36,7 @@ from app.db.models import (
     Conversation,
     ConversationChannel,
     ConversationStatus,
+    CrmEntity,
     ImportJob,
     ImportJobStatus,
     Integration,
@@ -43,6 +44,12 @@ from app.db.models import (
     SenderType,
 )
 from app.integrations.bitrix24.client import BitrixAPIError, BitrixClient
+from app.integrations.bitrix24.crm import (
+    enrich_entities,
+    extract_crm_refs_from_session,
+    sync_stages_cache,
+    upsert_link,
+)
 from app.integrations.bitrix24.events import map_connector_to_channel
 
 logger = logging.getLogger(__name__)
@@ -347,6 +354,8 @@ async def import_open_lines(
         recent = []
 
     stats = ImportStats()
+    crm_seen: dict[str, CrmEntity] = {}  # entity_id → CrmEntity, для последующего enrichment
+    crm_kinds_seen: set = set()
     for entry in recent[:chat_limit]:
         if not isinstance(entry, dict):
             continue
@@ -398,9 +407,38 @@ async def import_open_lines(
         )
         inserted = await _insert_messages(session, conv, history)
         await _recompute_conversation_analytics(session, conv)
+
+        # CRM-привязки: парсим из session-блока, идемпотентно создаём
+        # CrmEntity-заглушки и ConversationCrmLink. Детали (стадия, сумма)
+        # подтянутся одним батчем после цикла.
+        for kind, ext_id in extract_crm_refs_from_session(history):
+            ent = await upsert_link(
+                session, integration, conv, kind=kind, external_id=ext_id
+            )
+            crm_seen[ent.id] = ent
+            crm_kinds_seen.add(kind)
+
         stats.sessions += 1
         stats.messages += inserted
         await session.flush()
+
+    # Обогащаем CRM-сущности одним проходом: сначала справочник стадий,
+    # затем детали Deal/Lead/Contact/Company. Ошибки REST не должны валить
+    # импорт сообщений — логируем и продолжаем.
+    if crm_seen:
+        try:
+            stage_index = await sync_stages_cache(
+                client, session, integration, crm_kinds_seen
+            )
+            await enrich_entities(
+                client,
+                session,
+                integration,
+                list(crm_seen.values()),
+                stage_index,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("CRM enrichment failed: %s", exc)
 
     await session.commit()
     return stats

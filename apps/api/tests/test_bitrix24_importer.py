@@ -10,6 +10,7 @@ from sqlalchemy import select
 from app.db.models import (
     Conversation,
     ConversationChannel,
+    ConversationStatus,
     ImportJob,
     ImportJobStatus,
     Integration,
@@ -20,7 +21,6 @@ from app.db.models import (
     SenderType,
 )
 from app.db.session import AsyncSessionLocal
-from app.db.models import ConversationStatus
 from app.integrations.bitrix24.importer import (
     _channel_from_entity_id,
     _session_is_closed,

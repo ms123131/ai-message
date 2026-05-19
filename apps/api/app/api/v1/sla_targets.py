@@ -10,7 +10,6 @@
 from __future__ import annotations
 
 import secrets
-from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, ConfigDict, Field

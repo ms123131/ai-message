@@ -208,8 +208,8 @@ async def bitrix24_install_post(
         form = dict(request.query_params)
         try:
             form.update(dict(await request.form()))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("install POST has no form-data body: %s", exc)
         await _save_install_tokens(session, form)
     except Exception as exc:  # noqa: BLE001
         logger.exception("install handler error: %s", exc)
