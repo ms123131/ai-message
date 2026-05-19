@@ -313,6 +313,36 @@ _LIST_METHODS = {
 }
 
 
+async def refresh_known_crm_entities(
+    client: BitrixClient,
+    session: AsyncSession,
+    integration: Integration,
+) -> int:
+    """Дельта-синхронизация CRM-сущностей без активности диалогов.
+
+    Зачем: статус сделки в Bitrix24 меняется в CRM, а не в чате. Если у
+    диалога нет новых сообщений, импортёр Open Channels не появится в
+    `im.recent.get` → мы не дёрнем `crm.deal.list` и не узнаем, что
+    сделка стала won/lost. Эта функция вызывается отдельным cron-джобом
+    воркера и обновляет ВСЕ известные нам сущности интеграции.
+
+    Возвращает число обновлённых записей. Если сущностей нет — 0.
+    """
+    rows = (
+        await session.execute(
+            select(CrmEntity).where(CrmEntity.integration_id == integration.id)
+        )
+    ).scalars().all()
+    if not rows:
+        return 0
+
+    kinds = {e.kind for e in rows}
+    stage_index = await sync_stages_cache(client, session, integration, kinds)
+    await enrich_entities(client, session, integration, rows, stage_index)
+    await session.commit()
+    return len(rows)
+
+
 async def enrich_entities(
     client: BitrixClient,
     session: AsyncSession,

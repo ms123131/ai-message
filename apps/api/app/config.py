@@ -37,6 +37,12 @@ class Settings(BaseSettings):
     # 0 — отключить поллер.
     bitrix24_poll_interval_sec: int = 30
     bitrix24_poll_window_days: int = 1
+    # Отдельный дельта-sync статусов сделок/лидов в CRM (без активности диалогов).
+    # Bitrix24 не присылает изменения сделок через Open Channels — если у
+    # клиента нет новых сообщений, статус won/lost в нашей БД останется
+    # устаревшим. Раз в этот интервал воркер дотягивает все известные
+    # CrmEntity интеграции. 0 — отключить.
+    bitrix24_crm_sync_interval_sec: int = 300
 
     # Redis (брокер задач для arq-воркера). По умолчанию указывает на
     # compose-сервис `redis`. Для локального dev без docker — `redis://localhost:6379/0`.

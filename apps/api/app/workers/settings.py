@@ -15,6 +15,7 @@ import logging
 from app.workers.redis_pool import redis_settings
 from app.workers.tasks.bitrix_import import run_import_job_task
 from app.workers.tasks.bitrix_poll import dispatch_poll, poll_integration
+from app.workers.tasks.crm_sync import dispatch_crm_sync, sync_crm_for_integration
 
 logger = logging.getLogger(__name__)
 
@@ -26,7 +27,10 @@ async def _on_startup(ctx: dict) -> None:
     """
     pool = ctx["redis"]
     await pool.enqueue_job("dispatch_poll", _job_id="bootstrap-dispatch-poll")
-    logger.info("worker started; dispatch_poll bootstrapped")
+    await pool.enqueue_job(
+        "dispatch_crm_sync", _job_id="bootstrap-dispatch-crm-sync"
+    )
+    logger.info("worker started; dispatch_poll + dispatch_crm_sync bootstrapped")
 
 
 async def _on_shutdown(ctx: dict) -> None:  # noqa: ARG001
@@ -34,7 +38,13 @@ async def _on_shutdown(ctx: dict) -> None:  # noqa: ARG001
 
 
 class WorkerSettings:
-    functions = [dispatch_poll, poll_integration, run_import_job_task]
+    functions = [
+        dispatch_poll,
+        poll_integration,
+        run_import_job_task,
+        dispatch_crm_sync,
+        sync_crm_for_integration,
+    ]
     redis_settings = redis_settings()
     on_startup = _on_startup
     on_shutdown = _on_shutdown
