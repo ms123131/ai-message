@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
-import { AlertTriangle, Inbox, Loader2, Plug } from "lucide-react";
+import { Link, useSearchParams } from "react-router-dom";
+import { AlertTriangle, Inbox, Loader2, Plug, X } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/Button";
 import { cn } from "../lib/cn";
@@ -50,20 +50,54 @@ function formatTime(iso: string | null | undefined): string {
 }
 
 export function InboxPage() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const filters = useMemo(
+    () => ({
+      integration_id: searchParams.get("integration_id") ?? undefined,
+      channel:
+        (searchParams.get("channel") as ConversationChannel | null) ??
+        undefined,
+      status:
+        (searchParams.get("status") as "open" | "closed" | null) ?? undefined,
+      operator_id: searchParams.get("operator_id") ?? undefined,
+      line_id: searchParams.get("line_id") ?? undefined,
+    }),
+    [searchParams],
+  );
+  const initialConvParam = searchParams.get("conv");
+
   const integrationsQ = useQuery({
     queryKey: ["integrations"],
     queryFn: api.listIntegrations,
   });
+  const portalUsersQ = useQuery({
+    queryKey: ["portal-users", filters.integration_id ?? null],
+    queryFn: () =>
+      api.getPortalUsers({ integration_id: filters.integration_id }),
+    enabled: integrationsQ.isSuccess && !!filters.operator_id,
+  });
 
   const conversationsQ = useQuery({
-    queryKey: ["conversations"],
-    queryFn: () => api.listConversations({ limit: 100 }),
+    queryKey: ["conversations", filters],
+    queryFn: () => api.listConversations({ ...filters, limit: 100 }),
     enabled: integrationsQ.isSuccess,
     refetchInterval: 15000,
   });
 
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(
+    initialConvParam,
+  );
   const conversations = conversationsQ.data ?? [];
+
+  // Если в URL пришёл ?conv=... а его нет в выдаче (например, не подходит
+  // под текущие фильтры), всё равно подсветим первый из выдачи.
+  useEffect(() => {
+    if (!initialConvParam) return;
+    if (conversations.some((c) => c.id === initialConvParam)) {
+      setSelectedId(initialConvParam);
+    }
+  }, [initialConvParam, conversations]);
+
   const selected = useMemo(
     () =>
       conversations.find((c) => c.id === selectedId) ??
@@ -71,6 +105,41 @@ export function InboxPage() {
       null,
     [conversations, selectedId],
   );
+
+  function clearFilter(key: keyof typeof filters) {
+    const params = new URLSearchParams(searchParams);
+    params.delete(key);
+    setSearchParams(params, { replace: true });
+  }
+  function clearAllFilters() {
+    const params = new URLSearchParams(searchParams);
+    [
+      "integration_id",
+      "channel",
+      "status",
+      "operator_id",
+      "line_id",
+      "conv",
+    ].forEach((k) => params.delete(k));
+    setSearchParams(params, { replace: true });
+  }
+  const activeFilters = Object.entries(filters).filter(([, v]) => v);
+
+  const operatorName = useMemo(() => {
+    if (!filters.operator_id) return null;
+    const u = (portalUsersQ.data ?? []).find(
+      (x) => x.external_id === filters.operator_id,
+    );
+    return u?.full_name || `#${filters.operator_id}`;
+  }, [filters.operator_id, portalUsersQ.data]);
+
+  const integrationLabel = useMemo(() => {
+    if (!filters.integration_id) return null;
+    const i = (integrationsQ.data ?? []).find(
+      (x) => x.id === filters.integration_id,
+    );
+    return i?.label || i?.domain || `#${filters.integration_id}`;
+  }, [filters.integration_id, integrationsQ.data]);
 
   if (integrationsQ.isLoading) {
     return (
@@ -107,6 +176,55 @@ export function InboxPage() {
         title="Диалоги"
         description="Объединённая лента диалогов из всех подключённых каналов"
       />
+      {activeFilters.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 bg-amber-50/50 px-6 py-2 text-sm">
+          <span className="text-xs font-medium uppercase tracking-wider text-slate-500">
+            Фильтры:
+          </span>
+          {filters.integration_id && (
+            <FilterChip
+              label="Портал"
+              value={integrationLabel ?? filters.integration_id}
+              onRemove={() => clearFilter("integration_id")}
+            />
+          )}
+          {filters.channel && (
+            <FilterChip
+              label="Канал"
+              value={channelLabel[filters.channel] ?? filters.channel}
+              onRemove={() => clearFilter("channel")}
+            />
+          )}
+          {filters.status && (
+            <FilterChip
+              label="Статус"
+              value={filters.status === "open" ? "Открыт" : "Закрыт"}
+              onRemove={() => clearFilter("status")}
+            />
+          )}
+          {filters.operator_id && (
+            <FilterChip
+              label="Оператор"
+              value={operatorName ?? filters.operator_id}
+              onRemove={() => clearFilter("operator_id")}
+            />
+          )}
+          {filters.line_id && (
+            <FilterChip
+              label="Линия"
+              value={`#${filters.line_id}`}
+              onRemove={() => clearFilter("line_id")}
+            />
+          )}
+          <button
+            type="button"
+            onClick={clearAllFilters}
+            className="ml-auto text-xs text-slate-500 hover:text-slate-800 hover:underline"
+          >
+            сбросить все
+          </button>
+        </div>
+      )}
       <div className="grid h-[calc(100%-77px)] grid-cols-[360px_1fr]">
         <div className="overflow-y-auto border-r border-slate-200 bg-white">
           {conversationsQ.isLoading && (
@@ -337,5 +455,30 @@ function ErrorRow({ message }: { message: string }) {
       <AlertTriangle className="h-4 w-4 shrink-0" />
       <span>Ошибка загрузки: {message}</span>
     </div>
+  );
+}
+
+function FilterChip({
+  label,
+  value,
+  onRemove,
+}: {
+  label: string;
+  value: string;
+  onRemove: () => void;
+}) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-white px-2.5 py-0.5 text-xs text-slate-700">
+      <span className="text-slate-400">{label}:</span>
+      <span className="font-medium">{value}</span>
+      <button
+        type="button"
+        onClick={onRemove}
+        aria-label={`Снять фильтр ${label}`}
+        className="text-slate-400 transition hover:text-rose-600"
+      >
+        <X className="h-3 w-3" />
+      </button>
+    </span>
   );
 }

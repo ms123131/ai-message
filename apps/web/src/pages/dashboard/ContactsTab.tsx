@@ -1,8 +1,19 @@
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, UserSquare2 } from "lucide-react";
+import { Download, Loader2, UserSquare2 } from "lucide-react";
 import type { DashboardFilters } from "../../lib/api";
-import { api } from "../../lib/api";
+import { api, downloadCSV } from "../../lib/api";
+import { Button } from "../../components/ui/Button";
 import { fmtDateTime, fmtNumber } from "../../components/dashboard/format";
+
+function csvParams(f: DashboardFilters): string {
+  const usp = new URLSearchParams();
+  if (f.days) usp.set("days", String(f.days));
+  if (f.integration_id) usp.set("integration_id", f.integration_id);
+  if (f.channel) usp.set("channel", f.channel);
+  if (f.operator_id) usp.set("operator_id", f.operator_id);
+  const s = usp.toString();
+  return s ? `?${s}` : "";
+}
 
 export function ContactsTab({ filters }: { filters: DashboardFilters }) {
   const q = useQuery({
@@ -36,8 +47,21 @@ export function ContactsTab({ filters }: { filters: DashboardFilters }) {
 
   return (
     <div className="rounded-lg border border-slate-200 bg-white">
-      <div className="border-b border-slate-100 px-5 py-3 text-sm font-medium text-slate-700">
-        Топ контактов по объёму сообщений
+      <div className="flex items-center justify-between border-b border-slate-100 px-5 py-3">
+        <div className="text-sm font-medium text-slate-700">
+          Топ контактов по объёму сообщений
+        </div>
+        <Button
+          variant="secondary"
+          onClick={() =>
+            downloadCSV(
+              `/api/v1/dashboard/top-contacts.csv${csvParams(filters)}`,
+              `contacts-${filters.days ?? 30}d.csv`,
+            )
+          }
+        >
+          <Download className="h-4 w-4" /> Скачать CSV
+        </Button>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">

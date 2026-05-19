@@ -8,10 +8,23 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { Loader2, UserCircle2 } from "lucide-react";
+import { Link } from "react-router-dom";
+import { Download, Loader2, UserCircle2 } from "lucide-react";
 import type { DashboardFilters, ManagerRow } from "../../lib/api";
-import { api } from "../../lib/api";
+import { api, downloadCSV } from "../../lib/api";
+import { Button } from "../../components/ui/Button";
 import { fmtDuration, fmtNumber } from "../../components/dashboard/format";
+import { buildInboxLink } from "../../components/dashboard/inboxLink";
+
+function csvParams(f: DashboardFilters): string {
+  const usp = new URLSearchParams();
+  if (f.days) usp.set("days", String(f.days));
+  if (f.integration_id) usp.set("integration_id", f.integration_id);
+  if (f.channel) usp.set("channel", f.channel);
+  if (f.operator_id) usp.set("operator_id", f.operator_id);
+  const s = usp.toString();
+  return s ? `?${s}` : "";
+}
 
 export function ManagersTab({ filters }: { filters: DashboardFilters }) {
   const q = useQuery({
@@ -95,6 +108,22 @@ export function ManagersTab({ filters }: { filters: DashboardFilters }) {
 
       {/* Таблица операторов */}
       <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-2.5">
+          <div className="text-sm font-medium text-slate-700">
+            Все операторы за период
+          </div>
+          <Button
+            variant="secondary"
+            onClick={() =>
+              downloadCSV(
+                `/api/v1/dashboard/by-manager.csv${csvParams(filters)}`,
+                `operators-${filters.days ?? 14}d.csv`,
+              )
+            }
+          >
+            <Download className="h-4 w-4" /> Скачать CSV
+          </Button>
+        </div>
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-xs uppercase tracking-wider text-slate-500">
             <tr>
@@ -116,7 +145,10 @@ export function ManagersTab({ filters }: { filters: DashboardFilters }) {
             {rows.map((r) => (
               <tr key={r.operator_id} className="hover:bg-slate-50">
                 <td className="px-4 py-3">
-                  <div className="flex items-center gap-2.5">
+                  <Link
+                    to={buildInboxLink(filters, { operator_id: r.operator_id })}
+                    className="flex items-center gap-2.5 hover:text-brand-700"
+                  >
                     <Avatar row={r} />
                     <div className="min-w-0">
                       <div className="truncate font-medium text-slate-800">
@@ -128,16 +160,27 @@ export function ManagersTab({ filters }: { filters: DashboardFilters }) {
                         </div>
                       )}
                     </div>
-                  </div>
+                  </Link>
                 </td>
                 <td className="px-4 py-3 text-right tabular-nums">
-                  {fmtNumber(r.conversations)}
+                  <Link
+                    to={buildInboxLink(filters, { operator_id: r.operator_id })}
+                    className="hover:underline"
+                  >
+                    {fmtNumber(r.conversations)}
+                  </Link>
                 </td>
                 <td className="px-4 py-3 text-right tabular-nums">
                   {r.open_conversations > 0 ? (
-                    <span className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-700">
+                    <Link
+                      to={buildInboxLink(filters, {
+                        operator_id: r.operator_id,
+                        status: "open",
+                      })}
+                      className="inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-700 hover:bg-amber-100"
+                    >
                       {r.open_conversations}
-                    </span>
+                    </Link>
                   ) : (
                     <span className="text-slate-300">—</span>
                   )}

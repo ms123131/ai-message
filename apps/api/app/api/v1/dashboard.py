@@ -26,7 +26,10 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
+import csv
+import io
 from fastapi import APIRouter, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import Select, and_, case, desc, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,6 +42,7 @@ from app.db.models import (
     ConversationStatus,
     Integration,
     Message,
+    PortalLine,
     PortalUser,
     SenderType,
 )
@@ -120,6 +124,7 @@ class OverviewResponse(BaseModel):
     conversations: KPI  # новые диалоги в окне
     messages: KPI  # всего сообщений в окне
     open_now: int  # сейчас открытых (без окна — снимок состояния)
+    closed_in_period: KPI  # сколько закрыто за окно (по closed_at)
     # Качество.
     frt_median_sec: KPI  # медиана First Response Time
     frt_p90_sec: KPI  # p90 FRT
@@ -135,6 +140,7 @@ class DayPoint(BaseModel):
     day: date
     conversations: int
     messages: int
+    closed: int  # сколько диалогов закрыто в этот день
 
 
 class TimelineResponse(BaseModel):
@@ -206,6 +212,20 @@ class TopContactsResponse(BaseModel):
     items: list[TopContactItem]
 
 
+class LineRow(BaseModel):
+    line_id: str
+    name: str | None
+    integration_id: str
+    conversations: int
+    open_conversations: int
+    messages: int
+    frt_median_sec: int | None
+
+
+class ByLineResponse(BaseModel):
+    rows: list[LineRow]
+
+
 class PortalUserOut(BaseModel):
     external_id: str
     full_name: str | None
@@ -247,6 +267,42 @@ def _day_expr(column: Any, dialect: str) -> Any:
     if dialect == "postgresql":
         return func.to_char(column, "YYYY-MM-DD")
     return func.strftime("%Y-%m-%d", column)
+
+
+def _csv_response(
+    filename: str,
+    headers: list[str],
+    rows: list[list[Any]],
+) -> StreamingResponse:
+    """Готовит StreamingResponse с CSV для скачивания.
+
+    Префиксует контент BOM (﻿) — Excel под Windows иначе показывает
+    кириллицу кракозябрами. Разделитель — точка с запятой: с ним
+    русскоязычный Excel сразу разбивает по колонкам (запятая в локали — десятичный).
+    """
+
+    def _safe(value: Any) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, datetime):
+            return value.isoformat(timespec="seconds")
+        return str(value)
+
+    buf = io.StringIO()
+    buf.write("﻿")  # UTF-8 BOM
+    writer = csv.writer(buf, delimiter=";", quoting=csv.QUOTE_MINIMAL)
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow([_safe(v) for v in row])
+    buf.seek(0)
+    return StreamingResponse(
+        iter([buf.getvalue()]),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Cache-Control": "no-store",
+        },
+    )
 
 
 def _percentile_expr(column: Any, fraction: float, dialect: str) -> Any:
@@ -378,6 +434,15 @@ async def overview(
     )
     open_now = int((await session.execute(open_now_stmt)).scalar_one() or 0)
 
+    async def closed_in(start: datetime, end: datetime) -> float:
+        stmt = select(func.count(Conversation.id)).where(
+            *filters.conv_filters,
+            Conversation.closed_at.is_not(None),
+            Conversation.closed_at >= start,
+            Conversation.closed_at < end,
+        )
+        return await _scalar_or_zero(session, stmt)
+
     cur_convs = await conversations_in(range_from, range_to)
     prev_convs = await conversations_in(prev_from, prev_to)
     cur_msgs = await messages_in(range_from, range_to)
@@ -392,6 +457,8 @@ async def overview(
     prev_uniq = await unique_contacts_in(prev_from, prev_to)
     cur_ret = await returning_pct(range_from, range_to)
     prev_ret = await returning_pct(prev_from, prev_to)
+    cur_closed = await closed_in(range_from, range_to)
+    prev_closed = await closed_in(prev_from, prev_to)
 
     avg_now = cur_msgs / cur_convs if cur_convs else 0.0
     avg_prev = prev_msgs / prev_convs if prev_convs else 0.0
@@ -403,6 +470,7 @@ async def overview(
         conversations=_kpi(cur_convs, prev_convs),
         messages=_kpi(cur_msgs, prev_msgs),
         open_now=open_now,
+        closed_in_period=_kpi(cur_closed, prev_closed),
         frt_median_sec=_kpi(cur_frt_med, prev_frt_med),
         frt_p90_sec=_kpi(cur_frt_p90, prev_frt_p90),
         resolution_median_sec=_kpi(cur_res, prev_res),
@@ -439,6 +507,16 @@ async def timeline(
         .where(*filters.conv_filters, Conversation.created_at >= range_from)
         .group_by(day_conv)
     )
+    day_closed = _day_expr(Conversation.closed_at, dialect).label("day")
+    closed_stmt = (
+        select(day_closed, func.count(Conversation.id))
+        .where(
+            *filters.conv_filters,
+            Conversation.closed_at.is_not(None),
+            Conversation.closed_at >= range_from,
+        )
+        .group_by(day_closed)
+    )
 
     msg_counts: dict[str, int] = {
         str(d): int(cnt or 0)
@@ -447,6 +525,10 @@ async def timeline(
     conv_counts: dict[str, int] = {
         str(d): int(cnt or 0)
         for d, cnt in (await session.execute(convs_stmt)).all()
+    }
+    closed_counts: dict[str, int] = {
+        str(d): int(cnt or 0)
+        for d, cnt in (await session.execute(closed_stmt)).all()
     }
 
     # Точки идут с (today - days + 1) по today включительно — итого `days` дней.
@@ -460,6 +542,7 @@ async def timeline(
                 day=d,
                 conversations=conv_counts.get(key, 0),
                 messages=msg_counts.get(key, 0),
+                closed=closed_counts.get(key, 0),
             )
         )
     return TimelineResponse(range_days=days, points=points)
@@ -661,19 +744,41 @@ async def heatmap(
 
 @router.get("/sla-breaches", response_model=SLABreachesResponse)
 async def sla_breaches(
-    threshold_minutes: int = Query(15, ge=1, le=1440),
+    threshold_minutes: int | None = Query(
+        None,
+        ge=1,
+        le=1440,
+        description="Если задан — перебивает настройки tenant. Иначе берём из /sla-targets.",
+    ),
     limit: int = Query(50, ge=1, le=200),
     filters: _Filters = Depends(_filters_dep),
+    user: UserModel = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> SLABreachesResponse:
-    """Открытые диалоги, где последнее сообщение клиента ожидает ответа > threshold.
+    """Открытые диалоги, где последнее сообщение клиента ожидает ответа дольше
+    настроенного SLA-таргета (per-channel или общий).
 
-    Логика: для каждого открытого диалога находим последнее клиентское
-    сообщение; если после него нет ни одного сообщения оператора/бота
-    и прошло > threshold_minutes — это нарушение SLA.
+    Если query-параметр `threshold_minutes` задан — используем его для всех
+    каналов (быстрый «what-if»). Иначе берём настройки tenant'а через
+    `resolve_thresholds`.
     """
+    from app.api.v1.sla_targets import DEFAULT_THRESHOLD_MINUTES, resolve_thresholds
+
     now = datetime.now(UTC)
-    cutoff = now - timedelta(minutes=threshold_minutes)
+
+    if threshold_minutes is not None:
+        # Один глобальный порог — старое поведение.
+        thresholds: dict[ConversationChannel | None, int] = {None: threshold_minutes}
+        effective_threshold = threshold_minutes
+    else:
+        thresholds = await resolve_thresholds(session, user.tenant_id)
+        effective_threshold = thresholds.get(None, DEFAULT_THRESHOLD_MINUTES)
+
+    # Берём минимальный порог из всех — это самый ранний cutoff, под который
+    # может попасть любой диалог. Дальше пост-фильтруем в Python с учётом
+    # per-channel настроек.
+    min_threshold = min(thresholds.values())
+    cutoff = now - timedelta(minutes=min_threshold)
 
     # Подзапрос: последнее сообщение в каждом открытом диалоге.
     last_msg_sq = (
@@ -685,7 +790,7 @@ async def sla_breaches(
         .subquery()
     )
 
-    # Последнее сообщение — клиентское, и оно старше cutoff.
+    # Последнее сообщение — клиентское, и оно старше «самого мягкого» cutoff.
     stmt = (
         select(Conversation, Message, last_msg_sq.c.last_ts)
         .join(last_msg_sq, last_msg_sq.c.cid == Conversation.id)
@@ -703,11 +808,30 @@ async def sla_breaches(
             Message.sent_at < cutoff,
         )
         .order_by(Message.sent_at.asc())
-        .limit(limit)
+        # Запас на пост-фильтрацию: некоторые из выбранных могут не нарушать
+        # per-channel таргет, если он строже минимального.
+        .limit(limit * 3)
     )
-    rows = (await session.execute(stmt)).all()
+    rows_raw = (await session.execute(stmt)).all()
+
+    # Применяем per-channel таргеты: оставляем только тех, кто реально ждёт
+    # ДОЛЬШЕ своего channel-таргета (или дефолта).
+    rows = []
+    for conv, last_msg, last_ts in rows_raw:
+        ts = last_ts if last_ts.tzinfo else last_ts.replace(tzinfo=UTC)
+        ch_threshold = thresholds.get(conv.channel) or thresholds.get(
+            None, DEFAULT_THRESHOLD_MINUTES
+        )
+        wait_min = int((now - ts).total_seconds() // 60)
+        if wait_min < ch_threshold:
+            continue
+        rows.append((conv, last_msg, ts))
+        if len(rows) >= limit:
+            break
     if not rows:
-        return SLABreachesResponse(threshold_minutes=threshold_minutes, items=[])
+        return SLABreachesResponse(
+            threshold_minutes=effective_threshold, items=[]
+        )
 
     # Подтянем имена операторов одним запросом.
     integration_ids = {conv.integration_id for conv, _, _ in rows}
@@ -746,7 +870,9 @@ async def sla_breaches(
                 operator_name=op_name,
             )
         )
-    return SLABreachesResponse(threshold_minutes=threshold_minutes, items=items)
+    return SLABreachesResponse(
+        threshold_minutes=effective_threshold, items=items
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -793,6 +919,243 @@ async def top_contacts(
         for cid, name, convs, msgs, last in rows
     ]
     return TopContactsResponse(items=items)
+
+
+# ---------------------------------------------------------------------------
+# /by-line
+# ---------------------------------------------------------------------------
+
+
+@router.get("/by-line", response_model=ByLineResponse)
+async def by_line(
+    days: int = Query(30, ge=1, le=180),
+    limit: int = Query(20, ge=1, le=100),
+    filters: _Filters = Depends(_filters_dep),
+    session: AsyncSession = Depends(get_session),
+) -> ByLineResponse:
+    """Топ открытых линий за окно.
+
+    Группировка по `Conversation.line_id`. Имя линии подтягивается из
+    `PortalLine`. Линии без активности не возвращаются — это и есть
+    «топ»: видно, какие линии живые и насколько они нагружены.
+    """
+    range_from, _ = _window(days)
+    dialect = session.bind.dialect.name if session.bind else "postgresql"
+
+    # Считаем отдельно: число диалогов и сообщений. JOIN на messages
+    # с GROUP BY завышает количество диалогов в N раз (по числу сообщений)
+    # в обоих диалектах, поэтому используем два независимых запроса.
+    opens_case = func.sum(
+        case((Conversation.status == ConversationStatus.open, 1), else_=0)
+    ).label("opens")
+    conv_stmt = (
+        select(
+            Conversation.integration_id.label("integration_id"),
+            Conversation.line_id.label("line_id"),
+            func.count(Conversation.id).label("convs"),
+            opens_case,
+            _percentile_expr(
+                Conversation.response_time_sec, 0.5, dialect
+            ).label("frt_med"),
+        )
+        .where(
+            *filters.conv_filters,
+            Conversation.line_id.is_not(None),
+            Conversation.created_at >= range_from,
+        )
+        .group_by(Conversation.integration_id, Conversation.line_id)
+    )
+    rows = (await session.execute(conv_stmt)).all()
+    if not rows:
+        return ByLineResponse(rows=[])
+
+    msg_stmt = (
+        select(
+            Conversation.integration_id,
+            Conversation.line_id,
+            func.count(Message.id),
+        )
+        .join(Message, Message.conversation_id == Conversation.id)
+        .where(
+            *filters.conv_filters,
+            Conversation.line_id.is_not(None),
+            Conversation.created_at >= range_from,
+        )
+        .group_by(Conversation.integration_id, Conversation.line_id)
+    )
+    msg_index: dict[tuple[str, str], int] = {
+        (intg, line): int(cnt or 0)
+        for intg, line, cnt in (await session.execute(msg_stmt)).all()
+    }
+    if not rows:
+        return ByLineResponse(rows=[])
+
+    # Подтянем имена линий.
+    line_keys = {(r.integration_id, r.line_id) for r in rows}
+    lines = (
+        await session.execute(
+            select(PortalLine).where(
+                PortalLine.integration_id.in_({k[0] for k in line_keys}),
+                PortalLine.external_id.in_({k[1] for k in line_keys}),
+            )
+        )
+    ).scalars().all()
+    line_index: dict[tuple[str, str], PortalLine] = {
+        (l.integration_id, l.external_id): l for l in lines
+    }
+
+    result: list[LineRow] = []
+    for r in rows:
+        pl = line_index.get((r.integration_id, r.line_id))
+        result.append(
+            LineRow(
+                line_id=r.line_id,
+                name=pl.name if pl else None,
+                integration_id=r.integration_id,
+                conversations=int(r.convs or 0),
+                open_conversations=int(r.opens or 0),
+                messages=msg_index.get((r.integration_id, r.line_id), 0),
+                frt_median_sec=int(r.frt_med) if r.frt_med is not None else None,
+            )
+        )
+    result.sort(key=lambda x: x.messages, reverse=True)
+    return ByLineResponse(rows=result[:limit])
+
+
+# ---------------------------------------------------------------------------
+# CSV-экспорты таблиц
+# ---------------------------------------------------------------------------
+
+
+@router.get("/by-manager.csv")
+async def by_manager_csv(
+    days: int = Query(14, ge=1, le=180),
+    filters: _Filters = Depends(_filters_dep),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    data = await by_manager(days=days, limit=200, filters=filters, session=session)
+    rows = [
+        [
+            r.full_name or r.operator_id,
+            r.email or "",
+            r.work_position or "",
+            r.conversations,
+            r.open_conversations,
+            r.messages_sent,
+            r.frt_median_sec if r.frt_median_sec is not None else "",
+            r.frt_p90_sec if r.frt_p90_sec is not None else "",
+        ]
+        for r in data.rows
+    ]
+    return _csv_response(
+        f"operators-{days}d.csv",
+        [
+            "Оператор",
+            "Email",
+            "Должность",
+            "Диалогов",
+            "Открыто",
+            "Сообщений отправил",
+            "Время ответа медиана (сек)",
+            "Время ответа 90% (сек)",
+        ],
+        rows,
+    )
+
+
+@router.get("/top-contacts.csv")
+async def top_contacts_csv(
+    days: int = Query(30, ge=1, le=365),
+    filters: _Filters = Depends(_filters_dep),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    data = await top_contacts(days=days, limit=1000, filters=filters, session=session)
+    rows = [
+        [
+            c.contact_name or "",
+            c.contact_external_id or "",
+            c.conversations,
+            c.messages,
+            c.last_message_at,
+        ]
+        for c in data.items
+    ]
+    return _csv_response(
+        f"top-contacts-{days}d.csv",
+        ["Контакт", "ID контакта", "Диалогов", "Сообщений", "Последняя активность"],
+        rows,
+    )
+
+
+@router.get("/by-line.csv")
+async def by_line_csv(
+    days: int = Query(30, ge=1, le=180),
+    filters: _Filters = Depends(_filters_dep),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    data = await by_line(days=days, limit=200, filters=filters, session=session)
+    rows = [
+        [
+            r.name or f"#{r.line_id}",
+            r.line_id,
+            r.conversations,
+            r.open_conversations,
+            r.messages,
+            r.frt_median_sec if r.frt_median_sec is not None else "",
+        ]
+        for r in data.rows
+    ]
+    return _csv_response(
+        f"lines-{days}d.csv",
+        [
+            "Линия",
+            "ID линии",
+            "Диалогов",
+            "Открыто",
+            "Сообщений",
+            "Время ответа медиана (сек)",
+        ],
+        rows,
+    )
+
+
+@router.get("/sla-breaches.csv")
+async def sla_breaches_csv(
+    threshold_minutes: int | None = Query(None, ge=1, le=1440),
+    filters: _Filters = Depends(_filters_dep),
+    user: UserModel = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> StreamingResponse:
+    data = await sla_breaches(
+        threshold_minutes=threshold_minutes,
+        limit=200,
+        filters=filters,
+        user=user,
+        session=session,
+    )
+    rows = [
+        [
+            i.contact_name or "",
+            str(i.channel),
+            i.minutes_waiting,
+            i.last_client_message_at,
+            i.operator_name or "",
+            i.conversation_id,
+        ]
+        for i in data.items
+    ]
+    return _csv_response(
+        f"sla-breaches-{threshold_minutes}min.csv",
+        [
+            "Клиент",
+            "Канал",
+            "Ждёт (мин)",
+            "Последнее сообщение",
+            "Оператор",
+            "ID диалога",
+        ],
+        rows,
+    )
 
 
 # ---------------------------------------------------------------------------

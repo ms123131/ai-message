@@ -196,6 +196,7 @@ export type DashboardOverview = {
   conversations: KPI;
   messages: KPI;
   open_now: number;
+  closed_in_period: KPI;
   frt_median_sec: KPI;
   frt_p90_sec: KPI;
   resolution_median_sec: KPI;
@@ -208,6 +209,7 @@ export type TimelinePoint = {
   day: string;
   conversations: number;
   messages: number;
+  closed: number;
 };
 
 export type DashboardTimeline = {
@@ -237,6 +239,18 @@ export type ManagerRow = {
 };
 
 export type ByManagerResponse = { rows: ManagerRow[] };
+
+export type LineRow = {
+  line_id: string;
+  name: string | null;
+  integration_id: string;
+  conversations: number;
+  open_conversations: number;
+  messages: number;
+  frt_median_sec: number | null;
+};
+
+export type ByLineResponse = { rows: LineRow[] };
 
 export type HeatmapCell = { weekday: number; hour: number; count: number };
 export type HeatmapResponse = { cells: HeatmapCell[] };
@@ -312,6 +326,30 @@ function qs(params: Record<string, string | number | undefined | null>): string 
   return s ? `?${s}` : "";
 }
 
+/** Скачивает CSV по абсолютному пути API. Корректно работает с cookies (JWT
+ * через credentials: 'include'), затем превращает blob в файл и кликает
+ * по ссылке скачивания. Браузерное окно не открывается. */
+export async function downloadCSV(path: string, filename: string): Promise<void> {
+  const url = path.startsWith("http") ? path : `${API_URL}${path}`;
+  const token = tokenStore.get();
+  const resp = await fetch(url, {
+    credentials: "include",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+  });
+  if (!resp.ok) {
+    throw new Error(`Не удалось скачать CSV (${resp.status})`);
+  }
+  const blob = await resp.blob();
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+}
+
 export const api = {
   health: () => request<{ status: string; version: string }>("/api/v1/health"),
 
@@ -366,6 +404,9 @@ export const api = {
   listConversations: (params: {
     integration_id?: string;
     channel?: ConversationChannel;
+    status?: "open" | "closed";
+    operator_id?: string;
+    line_id?: string;
     limit?: number;
     offset?: number;
   } = {}) =>
@@ -392,6 +433,9 @@ export const api = {
 
   getDashboardByManager: (f: DashboardFilters & { limit?: number } = {}) =>
     request<ByManagerResponse>(`/api/v1/dashboard/by-manager${qs(f)}`),
+
+  getDashboardByLine: (f: DashboardFilters & { limit?: number } = {}) =>
+    request<ByLineResponse>(`/api/v1/dashboard/by-line${qs(f)}`),
 
   getDashboardHeatmap: (f: DashboardFilters = {}) =>
     request<HeatmapResponse>(`/api/v1/dashboard/heatmap${qs(f)}`),

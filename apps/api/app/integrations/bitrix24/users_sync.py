@@ -23,7 +23,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Integration, PortalUser
+from app.db.models import Integration, PortalLine, PortalUser
 from app.integrations.bitrix24.client import BitrixAPIError, BitrixClient
 
 logger = logging.getLogger(__name__)
@@ -147,6 +147,82 @@ async def sync_portal_users(
     return upserted
 
 
+async def sync_portal_lines(
+    client: BitrixClient,
+    session: AsyncSession,
+    integration: Integration,
+) -> int:
+    """Полная синхронизация `portal_lines` — справочник открытых линий.
+
+    Bitrix24 отдаёт всё одним вызовом без пагинации (линий обычно мало,
+    единицы-десятки). Bitrix-метод: `imopenlines.config.list.get`.
+    """
+    try:
+        rows = await client.call("imopenlines.config.list.get", {})
+    except BitrixAPIError as exc:
+        logger.warning(
+            "imopenlines.config.list.get failed integration=%s: %s",
+            integration.id,
+            exc,
+        )
+        return 0
+
+    if not isinstance(rows, list):
+        return 0
+
+    ext_ids: list[str] = []
+    parsed: list[tuple[str, str | None, bool]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        ext_id = _coerce_str(row.get("ID") or row.get("id"))
+        if not ext_id:
+            continue
+        name = row.get("LINE_NAME") or row.get("line_name") or row.get("NAME") or None
+        # ACTIVE может быть "Y"/"N"; по умолчанию считаем активной.
+        active = _bool(row.get("ACTIVE", "Y"))
+        ext_ids.append(ext_id)
+        parsed.append((ext_id, name, active))
+
+    if not ext_ids:
+        return 0
+
+    existing_rows = await session.execute(
+        select(PortalLine).where(
+            PortalLine.integration_id == integration.id,
+            PortalLine.external_id.in_(ext_ids),
+        )
+    )
+    existing = {p.external_id: p for p in existing_rows.scalars().all()}
+
+    now = datetime.now(UTC)
+    for ext_id, name, active in parsed:
+        row = existing.get(ext_id)
+        if row:
+            row.name = name
+            row.is_active = active
+            row.last_synced_at = now
+        else:
+            session.add(
+                PortalLine(
+                    id=f"pl_{secrets.token_urlsafe(8).lower()}",
+                    integration_id=integration.id,
+                    external_id=ext_id,
+                    name=name,
+                    is_active=active,
+                    last_synced_at=now,
+                )
+            )
+    await session.flush()
+    await session.commit()
+    logger.info(
+        "imopenlines.config.list.get sync: integration=%s lines=%d",
+        integration.id,
+        len(parsed),
+    )
+    return len(parsed)
+
+
 async def sync_portal_users_if_stale(
     client: BitrixClient,
     session: AsyncSession,
@@ -154,7 +230,7 @@ async def sync_portal_users_if_stale(
     *,
     stale_after: timedelta = timedelta(hours=24),
 ) -> bool:
-    """Запускает синхронизацию, если последняя была давно. Дешёвая проверка."""
+    """Запускает синхронизацию операторов И линий, если давно не было."""
     last = (
         await session.execute(
             select(PortalUser.last_synced_at)
@@ -166,4 +242,5 @@ async def sync_portal_users_if_stale(
     if last and (datetime.now(UTC) - last) < stale_after:
         return False
     await sync_portal_users(client, session, integration)
+    await sync_portal_lines(client, session, integration)
     return True
