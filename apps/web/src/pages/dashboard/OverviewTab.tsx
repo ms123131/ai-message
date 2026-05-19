@@ -12,11 +12,17 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { AlertTriangle, Clock, Loader2 } from "lucide-react";
+import { AlertTriangle, Clock, Loader2, Radio } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, type ConversationChannel, type DashboardFilters } from "../../lib/api";
 import { KPICard } from "../../components/dashboard/KPICard";
-import { fmtDateShort, fmtMinutesWaiting } from "../../components/dashboard/format";
+import { buildInboxLink } from "../../components/dashboard/inboxLink";
+import {
+  fmtDateShort,
+  fmtDuration,
+  fmtMinutesWaiting,
+  fmtNumber,
+} from "../../components/dashboard/format";
 
 const CHANNEL_LABELS: Record<ConversationChannel, string> = {
   whatsapp: "WhatsApp",
@@ -69,6 +75,11 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
       api.getDashboardSLABreaches({ ...filters, threshold_minutes: 15 }),
     refetchInterval: 30_000,
   });
+  const byLineQ = useQuery({
+    queryKey: ["dash-by-line", filters],
+    queryFn: () => api.getDashboardByLine({ ...filters, limit: 5 }),
+    refetchInterval: 60_000,
+  });
 
   const o = overviewQ.data;
 
@@ -98,7 +109,15 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
             label="Открыто сейчас"
             value={o?.open_now}
             loading={overviewQ.isLoading}
-            hint="мгновенный снимок"
+            hint="мгновенный снимок · перейти к списку"
+            linkTo={buildInboxLink(filters, { status: "open" })}
+          />
+          <KPICard
+            label="Закрыто за период"
+            kpi={o?.closed_in_period}
+            loading={overviewQ.isLoading}
+            hint="скорость разгребания"
+            linkTo={buildInboxLink(filters, { status: "closed" })}
           />
           <KPICard
             label="Сообщений на диалог"
@@ -148,13 +167,19 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
 
       {/* Графики: timeline + по каналам */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <Card title="Динамика сообщений" className="xl:col-span-2">
+        <Card
+          title="Динамика сообщений и закрытий"
+          subtitle="голубая зона — входящие, зелёная — закрытые диалоги"
+          className="xl:col-span-2"
+        >
           {timelineQ.isLoading ? (
             <Center>
               <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
             </Center>
-          ) : (timelineQ.data?.points ?? []).every((p) => p.messages === 0) ? (
-            <EmptyChart text="Нет сообщений за выбранный период" />
+          ) : (timelineQ.data?.points ?? []).every(
+              (p) => p.messages === 0 && p.closed === 0,
+            ) ? (
+            <EmptyChart text="Нет активности за выбранный период" />
           ) : (
             <ResponsiveContainer width="100%" height={260}>
               <AreaChart data={timelineQ.data?.points ?? []}>
@@ -162,6 +187,10 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
                   <linearGradient id="msgFill" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="#3a66f5" stopOpacity={0.3} />
                     <stop offset="100%" stopColor="#3a66f5" stopOpacity={0} />
+                  </linearGradient>
+                  <linearGradient id="closedFill" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="#10b981" stopOpacity={0.25} />
+                    <stop offset="100%" stopColor="#10b981" stopOpacity={0} />
                   </linearGradient>
                 </defs>
                 <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
@@ -179,7 +208,11 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
                     border: "1px solid #e2e8f0",
                   }}
                   labelFormatter={(l) => fmtDateShort(String(l))}
-                  formatter={(v: number) => [v, "сообщений"]}
+                  formatter={(v: number, key: string) =>
+                    key === "messages"
+                      ? [v, "Сообщений"]
+                      : [v, "Закрыто диалогов"]
+                  }
                 />
                 <Area
                   type="monotone"
@@ -187,6 +220,13 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
                   stroke="#3a66f5"
                   strokeWidth={2}
                   fill="url(#msgFill)"
+                />
+                <Area
+                  type="monotone"
+                  dataKey="closed"
+                  stroke="#10b981"
+                  strokeWidth={2}
+                  fill="url(#closedFill)"
                 />
               </AreaChart>
             </ResponsiveContainer>
@@ -248,6 +288,19 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
           <SLAList
             items={slaQ.data?.items ?? []}
             loading={slaQ.isLoading}
+          />
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 gap-4">
+        <Card
+          title="Топ открытых линий"
+          subtitle="по объёму сообщений за период"
+        >
+          <LineList
+            rows={byLineQ.data?.rows ?? []}
+            loading={byLineQ.isLoading}
+            filters={filters}
           />
         </Card>
       </div>
@@ -374,6 +427,79 @@ function Heatmap({
         ))}
       </div>
     </div>
+  );
+}
+
+function LineList({
+  rows,
+  loading,
+  filters,
+}: {
+  rows: import("../../lib/api").LineRow[];
+  loading?: boolean;
+  filters: DashboardFilters;
+}) {
+  if (loading) {
+    return (
+      <div className="flex h-[180px] items-center justify-center text-sm text-slate-400">
+        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Загрузка…
+      </div>
+    );
+  }
+  if (rows.length === 0) {
+    return (
+      <div className="flex h-[180px] items-center justify-center text-sm text-slate-400">
+        Открытые линии не активны за этот период
+      </div>
+    );
+  }
+  const max = Math.max(...rows.map((r) => r.messages), 1);
+  return (
+    <ul className="divide-y divide-slate-100">
+      {rows.map((r) => (
+        <li
+          key={`${r.integration_id}-${r.line_id}`}
+          className="flex items-center gap-3 py-3"
+        >
+          <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-violet-50 text-violet-600">
+            <Radio className="h-4 w-4" />
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center justify-between gap-2">
+              <Link
+                to={buildInboxLink(
+                  { ...filters, integration_id: r.integration_id },
+                  { line_id: r.line_id },
+                )}
+                className="truncate font-medium text-slate-800 hover:text-brand-700 hover:underline"
+              >
+                {r.name || `Линия #${r.line_id}`}
+              </Link>
+              <div className="shrink-0 text-xs text-slate-500 tabular-nums">
+                {fmtNumber(r.messages)} сообщений · {fmtNumber(r.conversations)}{" "}
+                диалогов
+              </div>
+            </div>
+            <div className="mt-1 flex items-center gap-2">
+              <div className="h-1.5 flex-1 overflow-hidden rounded bg-slate-100">
+                <div
+                  className="h-full bg-violet-500"
+                  style={{ width: `${(r.messages / max) * 100}%` }}
+                />
+              </div>
+              <div className="w-32 shrink-0 text-right text-xs text-slate-500">
+                {r.open_conversations > 0 && (
+                  <span className="mr-2 inline-flex items-center rounded bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                    откр. {r.open_conversations}
+                  </span>
+                )}
+                <span>отв.&nbsp;{fmtDuration(r.frt_median_sec)}</span>
+              </div>
+            </div>
+          </div>
+        </li>
+      ))}
+    </ul>
   );
 }
 

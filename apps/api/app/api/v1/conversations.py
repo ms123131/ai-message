@@ -23,6 +23,9 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 async def list_conversations(
     integration_id: str | None = None,
     channel: ConversationChannel | None = None,
+    status_: str | None = Query(None, alias="status"),
+    operator_id: str | None = None,
+    line_id: str | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
@@ -50,6 +53,12 @@ async def list_conversations(
         stmt = stmt.where(Conversation.integration_id == integration_id)
     if channel:
         stmt = stmt.where(Conversation.channel == channel)
+    if status_ in ("open", "closed"):
+        stmt = stmt.where(Conversation.status == status_)
+    if operator_id:
+        stmt = stmt.where(Conversation.assigned_user_id == operator_id)
+    if line_id:
+        stmt = stmt.where(Conversation.line_id == line_id)
 
     rows = (await session.execute(stmt)).all()
     if not rows:

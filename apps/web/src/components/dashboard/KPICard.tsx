@@ -1,4 +1,5 @@
 import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
+import { Link } from "react-router-dom";
 import type { KPI } from "../../lib/api";
 import { cn } from "../../lib/cn";
 
@@ -14,6 +15,8 @@ export type KPICardProps = {
   loading?: boolean;
   /** Дополнительная подсказка под значением (например, «сейчас открыто»). */
   hint?: string;
+  /** Если задано — карточка становится ссылкой (drill-down в Inbox/др.). */
+  linkTo?: string;
 };
 
 function fmtNumber(v: number): string {
@@ -49,6 +52,7 @@ export function KPICard({
   higherIsBetter = true,
   loading,
   hint,
+  linkTo,
 }: KPICardProps) {
   const v = kpi?.value ?? value;
   const delta = kpi?.delta_pct ?? null;
@@ -74,8 +78,8 @@ export function KPICard({
     trendText = `${sign}${delta.toFixed(1)}%`;
   }
 
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5">
+  const content = (
+    <>
       <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
         {label}
       </div>
@@ -101,6 +105,22 @@ export function KPICard({
         </div>
       </div>
       {hint && <div className="mt-1 text-xs text-slate-400">{hint}</div>}
+    </>
+  );
+
+  if (linkTo) {
+    return (
+      <Link
+        to={linkTo}
+        className="block rounded-lg border border-slate-200 bg-white p-5 transition hover:border-brand-300 hover:shadow-sm"
+      >
+        {content}
+      </Link>
+    );
+  }
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-5">
+      {content}
     </div>
   );
 }

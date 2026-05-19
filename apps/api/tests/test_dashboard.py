@@ -286,6 +286,56 @@ async def test_by_channel(client, auth_tenant_id):
 
 
 @pytest.mark.asyncio
+async def test_by_line(client, auth_tenant_id):
+    """by-line группирует диалоги по line_id и подтягивает имя из PortalLine."""
+    integration_id = await _seed_with_operator(auth_tenant_id)
+    async with AsyncSessionLocal() as session:
+        from app.db.models import PortalLine
+
+        session.add(
+            PortalLine(
+                id="pl_3",
+                integration_id=integration_id,
+                external_id="3",
+                name="WhatsApp основной",
+                is_active=True,
+            )
+        )
+        await session.commit()
+
+    resp = await client.get("/api/v1/dashboard/by-line?days=7")
+    assert resp.status_code == 200
+    rows = resp.json()["rows"]
+    assert len(rows) == 1
+    assert rows[0]["line_id"] == "3"
+    assert rows[0]["name"] == "WhatsApp основной"
+    assert rows[0]["conversations"] == 2
+    assert rows[0]["open_conversations"] == 1
+    assert rows[0]["messages"] == 4
+
+
+@pytest.mark.asyncio
+async def test_overview_includes_closed_in_period(client, auth_tenant_id):
+    """closed_in_period считает только диалоги с closed_at в окне."""
+    await _seed_with_operator(auth_tenant_id)
+    resp = await client.get("/api/v1/dashboard/overview?days=7")
+    assert resp.status_code == 200
+    data = resp.json()
+    # В _seed_with_operator один диалог закрыт (cm2 с closed_at) → 1.
+    assert data["closed_in_period"]["value"] == 1
+
+
+@pytest.mark.asyncio
+async def test_timeline_includes_closed_field(client, auth_tenant_id):
+    await _seed_with_operator(auth_tenant_id)
+    resp = await client.get("/api/v1/dashboard/timeline?days=7")
+    assert resp.status_code == 200
+    points = resp.json()["points"]
+    total_closed = sum(p["closed"] for p in points)
+    assert total_closed == 1
+
+
+@pytest.mark.asyncio
 async def test_sla_breaches(client, auth_tenant_id):
     """Создаём открытый диалог с клиентским сообщением 30 минут назад → должно быть нарушение."""
     integration_id = await _seed_with_operator(auth_tenant_id)

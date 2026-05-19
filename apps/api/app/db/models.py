@@ -338,6 +338,83 @@ class PortalUser(Base):
     )
 
 
+class SLATarget(Base):
+    """Настройка SLA-таргета на уровне tenant (опционально per channel).
+
+    Если `channel` пуст → таргет действует на все каналы.
+    Если задан channel → переопределяет дефолт для этого канала.
+    Используется в `/dashboard/sla-breaches` для расчёта «горящих» диалогов.
+    """
+
+    __tablename__ = "sla_targets"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Если NULL — таргет общий (дефолт для всех каналов).
+    channel: Mapped[ConversationChannel | None] = mapped_column(
+        SAEnum(ConversationChannel, name="conversation_channel"),
+    )
+    threshold_minutes: Mapped[int] = mapped_column(Integer, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_sla_targets_tenant_channel",
+            "tenant_id",
+            "channel",
+            unique=True,
+        ),
+    )
+
+
+class PortalLine(Base):
+    """Кэш открытых линий Bitrix24 (line_id → название).
+
+    Заполняется фоновой синхронизацией через `imopenlines.config.list.get`.
+    Используется в дашборде («Топ линий») чтобы показывать имена вместо id.
+    """
+
+    __tablename__ = "portal_lines"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    integration_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("integrations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # ID открытой линии в Bitrix24 (CONFIG_ID).
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(255))
+    is_active: Mapped[bool] = mapped_column(default=True, nullable=False)
+    last_synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_portal_lines_integration_external",
+            "integration_id",
+            "external_id",
+            unique=True,
+        ),
+    )
+
+
 class ImportJobStatus(str, Enum):
     pending = "pending"
     running = "running"

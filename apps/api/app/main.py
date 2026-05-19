@@ -57,6 +57,12 @@ async def _ensure_schema_patches() -> None:
         "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS response_time_sec INTEGER",
         "CREATE INDEX IF NOT EXISTS ix_conversations_integration_assigned ON conversations(integration_id, assigned_user_id)",
         "CREATE INDEX IF NOT EXISTS ix_conversations_integration_status_updated ON conversations(integration_id, status, updated_at)",
+        # Фаза 5+ (CRM-конверсия): связь диалогов с лидами/сделками Bitrix24.
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS crm_lead_id VARCHAR(64)",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS crm_deal_id VARCHAR(64)",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deal_status VARCHAR(64)",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deal_amount NUMERIC(14,2)",
+        "ALTER TABLE conversations ADD COLUMN IF NOT EXISTS deal_currency VARCHAR(8)",
     ]
     async with engine.begin() as conn:
         for stmt in statements:
