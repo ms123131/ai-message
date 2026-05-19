@@ -23,11 +23,25 @@ from app.db.models import (
 from app.db.session import AsyncSessionLocal
 from app.integrations.bitrix24.importer import (
     _channel_from_entity_id,
+    _line_id_from_entity_id,
     _session_is_closed,
     _session_meta,
     import_open_lines,
     run_import_job,
 )
+
+
+def test_line_id_from_entity_id():
+    # imol: imol|<connector>|<line>|<user>  → line = parts[2]
+    assert _line_id_from_entity_id("imol|telegrambot|2|200") == "2"
+    # livechat: livechat|<config>|<line>|<user>  → parts[2]
+    assert _line_id_from_entity_id("livechat|7|2|10") == "2"
+    # неподходящие/частичные/None → None
+    assert _line_id_from_entity_id(None) is None
+    assert _line_id_from_entity_id("") is None
+    assert _line_id_from_entity_id("just-a-string") is None
+    assert _line_id_from_entity_id("imol|x") is None
+    assert _line_id_from_entity_id("unknown|1|2|3") is None
 
 
 def test_session_meta_extracts_operator_and_line():

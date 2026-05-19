@@ -73,6 +73,32 @@ def _parse_iso(value: Any) -> datetime | None:
     return None
 
 
+def _line_id_from_entity_id(entity_id: str | None) -> str | None:
+    """Достаёт ID открытой линии (CONFIG_ID) из `chat.entityId`.
+
+    Формат в Bitrix24:
+      `imol|<connector>|<line>|<user>`     — внешний коннектор
+      `livechat|<config>|<line>|<user>`    — виджет сайта
+    Для обоих случаев line_id — третий элемент (индекс 2). Если строка
+    не похожа на entity_id открытой линии — возвращаем None.
+
+    Используется как fallback к `session.CONFIG_ID`: Bitrix не всегда
+    отдаёт блок `session` в `imopenlines.session.history.get`, и без этого
+    fallback у диалогов остаётся `line_id = NULL`, из-за чего «Топ
+    открытых линий» в дашборде остаётся пустым.
+    """
+    if not entity_id:
+        return None
+    parts = entity_id.split("|")
+    if len(parts) < 3:
+        return None
+    head = parts[0].lower()
+    if head not in {"imol", "livechat"}:
+        return None
+    candidate = parts[2].strip()
+    return candidate or None
+
+
 def _channel_from_entity_id(entity_id: str | None) -> ConversationChannel:
     """
     `chat.entity_id` для открытых линий:
@@ -390,9 +416,15 @@ async def import_open_lines(
         ) else {}
         users = history.get("users") or {}
         contact_name, contact_external_id = _extract_contact(users, chat_meta)
-        channel = _channel_from_entity_id(chat_meta.get("entityId") or chat_meta.get("entity_id"))
+        entity_id_raw = chat_meta.get("entityId") or chat_meta.get("entity_id")
+        channel = _channel_from_entity_id(entity_id_raw)
         is_closed = _session_is_closed(history)
         operator_id, line_id = _session_meta(history)
+        # Fallback: Bitrix24 не всегда отдаёт `session` блок в
+        # imopenlines.session.history.get. ID линии при этом всегда есть в
+        # `entityId` чата — парсим оттуда, чтобы дашборд «Топ линий» работал.
+        if not line_id:
+            line_id = _line_id_from_entity_id(entity_id_raw)
 
         conv = await _upsert_conversation(
             session,
