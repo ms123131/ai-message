@@ -16,6 +16,7 @@ import { AlertTriangle, Clock, Loader2, Radio } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, type ConversationChannel, type DashboardFilters } from "../../lib/api";
 import { KPICard } from "../../components/dashboard/KPICard";
+import { FunnelChart } from "../../components/dashboard/FunnelChart";
 import { buildInboxLink } from "../../components/dashboard/inboxLink";
 import {
   fmtDateShort,
@@ -78,6 +79,11 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
   const byLineQ = useQuery({
     queryKey: ["dash-by-line", filters],
     queryFn: () => api.getDashboardByLine({ ...filters, limit: 5 }),
+    refetchInterval: 60_000,
+  });
+  const funnelQ = useQuery({
+    queryKey: ["dash-funnel", filters],
+    queryFn: () => api.getDashboardFunnel(filters),
     refetchInterval: 60_000,
   });
 
@@ -162,6 +168,35 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
             loading={overviewQ.isLoading}
             hint="% с более чем одним обращением"
           />
+        </div>
+      </Section>
+
+      {/* Ряд 3 — CRM-конверсия */}
+      <Section title="Конверсия в CRM">
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
+          <div className="grid grid-cols-1 gap-3 xl:col-span-1">
+            <KPICard
+              label="Диалог → сделка"
+              kpi={o?.conversion_to_deal_pct}
+              format="percent"
+              loading={overviewQ.isLoading}
+              hint="% диалогов, породивших Deal"
+            />
+            <KPICard
+              label="Win-rate сделок"
+              kpi={o?.win_rate_pct}
+              format="percent"
+              loading={overviewQ.isLoading}
+              hint="выиграно / (выиграно + проиграно)"
+            />
+          </div>
+          <Card
+            title="Воронка диалоги → лиды → сделки"
+            subtitle="по диалогам в периоде; % — конверсия из предыдущей ступени"
+            className="xl:col-span-2"
+          >
+            <FunnelChart data={funnelQ.data} loading={funnelQ.isLoading} />
+          </Card>
         </div>
       </Section>
 

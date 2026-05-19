@@ -207,6 +207,31 @@ export type DashboardOverview = {
   unique_contacts: KPI;
   returning_contacts_pct: KPI;
   avg_messages_per_conv: KPI;
+  conversion_to_deal_pct: KPI;
+  win_rate_pct: KPI;
+};
+
+export type FunnelStage = {
+  key:
+    | "conversations"
+    | "with_lead"
+    | "with_deal"
+    | "with_won_deal"
+    | "with_lost_deal";
+  label: string;
+  count: number;
+};
+
+export type FunnelResponse = {
+  range_days: number;
+  range_from: string;
+  range_to: string;
+  stages: FunnelStage[];
+  conversion_to_lead_pct: number;
+  conversion_to_deal_pct: number;
+  win_rate_pct: number;
+  revenue_won: number;
+  currency: string | null;
 };
 
 export type TimelinePoint = {
@@ -450,6 +475,9 @@ export const api = {
 
   getDashboardTopContacts: (f: DashboardFilters & { limit?: number } = {}) =>
     request<TopContactsResponse>(`/api/v1/dashboard/top-contacts${qs(f)}`),
+
+  getDashboardFunnel: (f: DashboardFilters = {}) =>
+    request<FunnelResponse>(`/api/v1/dashboard/funnel${qs(f)}`),
 
   getPortalUsers: (params: { integration_id?: string; only_active?: boolean } = {}) =>
     request<PortalUser[]>(
