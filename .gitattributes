@@ -1,0 +1,11 @@
+# Принудительно LF для shell-скриптов и Dockerfile —
+# чтобы Windows-чекаут не ломал shebang в Linux-контейнерах.
+*.sh text eol=lf
+*.bash text eol=lf
+entrypoint.sh text eol=lf
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+docker-entrypoint.sh text eol=lf
+
+# Прочее по умолчанию: auto (CRLF на Windows для текстовых файлов — норм).
+* text=auto

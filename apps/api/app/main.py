@@ -7,7 +7,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import __version__
 from app.api.v1 import api_router
 from app.config import get_settings
-from app.db.session import Base, engine
+from app.db.session import engine
+from app.workers.redis_pool import close_pool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("ai-message")
@@ -15,13 +16,16 @@ logger = logging.getLogger("ai-message")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    # На старте MVP создаём таблицы напрямую через SQLAlchemy.
-    # Alembic-миграции добавятся, когда схема стабилизируется.
-    async with engine.begin() as conn:
-        await conn.run_sync(Base.metadata.create_all)
+    # Схема БД создаётся миграциями Alembic вне процесса API
+    # (см. compose-сервис `migrate`).
+    # Фоновый поллинг и импорт теперь делает отдельный воркер-контейнер
+    # (`compose worker`), API только enqueue-ит задачи в Redis.
     logger.info("ai-message api v%s started", __version__)
-    yield
-    await engine.dispose()
+    try:
+        yield
+    finally:
+        await close_pool()
+        await engine.dispose()
 
 
 def create_app() -> FastAPI:

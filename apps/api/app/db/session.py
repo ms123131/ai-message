@@ -1,5 +1,7 @@
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import event
+from sqlalchemy.engine import Engine
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -16,6 +18,20 @@ engine = create_async_engine(
     echo=settings.is_dev,
     future=True,
 )
+
+
+# SQLite по умолчанию игнорирует FOREIGN KEY и ON DELETE CASCADE.
+# В тестах используется sqlite, поэтому включаем enforcement на каждое соединение.
+@event.listens_for(Engine, "connect")
+def _enable_sqlite_fk(dbapi_connection, _record):
+    module = dbapi_connection.__class__.__module__
+    if "sqlite" not in module and "aiosqlite" not in module:
+        return
+    cursor = dbapi_connection.cursor()
+    try:
+        cursor.execute("PRAGMA foreign_keys=ON")
+    finally:
+        cursor.close()
 
 AsyncSessionLocal = async_sessionmaker(
     engine,

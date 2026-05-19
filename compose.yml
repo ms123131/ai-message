@@ -29,6 +29,35 @@ services:
     ports:
       - "5432:5432"
 
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # AOF appendfsync=everysec: при штатном рестарте задачи переживают,
+    # при kill -9 теряем максимум 1с очереди. CPU-оверхед минимален.
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  migrate:
+    # One-shot контейнер: применяет миграции Alembic и выходит.
+    # api ждёт его успешного завершения через service_completed_successfully.
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    command: ["run-migrations"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aimessage}:${POSTGRES_PASSWORD:-aimessage}@postgres:5432/${POSTGRES_DB:-aimessage}
+
   api:
     build:
       context: ./apps/api
@@ -37,14 +66,47 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       APP_ENV: ${APP_ENV:-production}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aimessage}:${POSTGRES_PASSWORD:-aimessage}@postgres:5432/${POSTGRES_DB:-aimessage}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL-}
+      BITRIX24_APP_CLIENT_ID: ${BITRIX24_APP_CLIENT_ID-}
+      BITRIX24_APP_CLIENT_SECRET: ${BITRIX24_APP_CLIENT_SECRET-}
     # Прямой доступ к API — на время разработки. В проде убрать.
     ports:
       - "8000:8000"
+
+  worker:
+    # Воркер фоновых задач (arq). Тот же образ, что и api, но другой
+    # entrypoint: `run-worker` → `arq app.workers.settings.WorkerSettings`.
+    # Берёт DATABASE_URL/REDIS_URL/Bitrix-секреты из тех же env, что и api.
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    command: ["run-worker"]
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aimessage}:${POSTGRES_PASSWORD:-aimessage}@postgres:5432/${POSTGRES_DB:-aimessage}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      BITRIX24_APP_CLIENT_ID: ${BITRIX24_APP_CLIENT_ID-}
+      BITRIX24_APP_CLIENT_SECRET: ${BITRIX24_APP_CLIENT_SECRET-}
+      BITRIX24_POLL_INTERVAL_SEC: ${BITRIX24_POLL_INTERVAL_SEC:-30}
+      BITRIX24_POLL_WINDOW_DAYS: ${BITRIX24_POLL_WINDOW_DAYS:-1}
 
   web:
     build:
@@ -62,3 +124,4 @@ services:
 
 volumes:
   postgres_data:
+  redis_data:

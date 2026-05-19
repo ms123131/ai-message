@@ -55,62 +55,95 @@ SaaS-приложение для анализа коммуникационных
 
 ---
 
-## Фаза 3 — Реальные данные из Bitrix24 (NEXT)
+## Фаза 3 — Реальные данные из Bitrix24 ✅ (с двумя открытыми TODO в 3.3)
 
-Цель: чтобы wizard, Inbox и Dashboard показывали **реальные данные с подключённого портала**, а не mock'и.
+Цель: чтобы wizard, Inbox и Dashboard показывали реальные данные. Достигнута.
 
-### 3.1 Bitrix24 коннектор — полноценный
-- [ ] `app/integrations/bitrix24/client.py` — REST-клиент с автоматическим обновлением `access_token` по `refresh_token` за 5 минут до истечения
-- [ ] Throttling: 2 req/sec на портал (`asyncio.Semaphore` + sleep)
-- [ ] Поддержка `batch` для группировки до 50 запросов
-- [ ] Обработка ошибок `expired_token` → авто-refresh → retry
-- [ ] Поддержка webhook-режима (вызов через сохранённый `webhook_url`)
+### 3.1 Bitrix24 коннектор ✅
+- [x] REST-клиент `client.py` с авто-refresh `access_token` за 5 минут до истечения
+- [x] Throttling 2 req/sec на портал (`asyncio.Semaphore`)
+- [x] `batch()` до 50 запросов
+- [x] Retry на `expired_token` (один проход после refresh)
+- [x] ~~Webhook-режим~~ удалён в фазе 4.5 (тиражное приложение — только OAuth)
 
-### 3.2 Подписка на события
-- [ ] При создании OAuth-подключения автоматически вызывать `event.bind` для:
-  - `OnImOpenLinesMessageAdd` (новое сообщение в Open Channels)
-  - `OnImOpenLinesSessionStart` / `OnImOpenLinesSessionFinish`
-  - `OnCrmActivityAdd` с `TYPE_ID=EMAIL` (входящие письма через CRM)
-- [ ] Endpoint `/webhooks/bitrix24`: валидация `auth[application_token]`, dedup по `event_handler_id`
-- [ ] Постановка событий в очередь (на старте — `asyncio.Queue` + воркер в lifespan; позже — Redis/Celery)
+### 3.2 Подписка на события — заменена поллингом ✅
+Универсальное приложение без своего коннектора не получает `OnImOpenLinesMessageAdd`
+от B24. Вместо `event.bind` сделан фоновый поллер `poller.py` (`im.recent.get` +
+`imopenlines.session.history.get`). Commit `852dc3b`. Поллер уезжает в worker
+в PR #3 (Redis + ARQ).
 
-### 3.3 Исторический импорт
-- [ ] Команда `app/cli.py import-bitrix24 --integration-id <id> --days 30`
-- [ ] Импорт через `imopenlines.session.list` + `imopenlines.dialog.messages.get` с пагинацией
-- [ ] Прогресс импорта в БД (`ImportJob`)
+### 3.3 Исторический импорт ✅ (MVP)
+- [x] Команда `python -m app.cli import-bitrix24 --integration-id <id> --days 30`
+- [x] Импорт через `im.recent.get` (ONLY_OPENLINES) + `imopenlines.session.history.get` по CHAT_ID, дедуп через unique-индексы
+- [x] Модель `ImportJob` + `POST /api/v1/integrations/{id}/import` (BackgroundTasks) + `GET /import-jobs`
+- [ ] TODO: полная история всех закрытых сессий чата (сейчас берём только последнюю, видимую через history.get)
+- [ ] TODO: качать вложения с Bitrix Disk (сейчас сохраняем только метаданные)
 
-### 3.4 Модель данных (расширение)
-- [ ] `Conversation` (id, integration_id, external_id, channel, contact_name, status, created_at)
-- [ ] `Message` (id, conversation_id, external_id, sender_type [client/agent/bot], text, attachments_json, sent_at)
-- [ ] Индексы: `(integration_id, created_at desc)`, `(conversation_id, sent_at)`
-- [ ] Полнотекстовый поиск Postgres (`tsvector` + GIN)
+### 3.4 Модель данных ✅
+- [x] `Conversation`, `Message` с нужными полями (см. `app/db/models.py`)
+- [x] Индексы: `(integration_id, created_at)`, `(conversation_id, sent_at)`,
+  `(integration_id, status, updated_at)`, уникальные дедуп-индексы
+- [x] FTS по `messages.tsv` (Postgres tsvector + GIN-индекс) в `0001_initial.py`
 
-### 3.5 API для Inbox/Dashboard на реальных данных
-- [ ] `GET /api/v1/conversations` — фильтры (channel, integration_id, дата)
-- [ ] `GET /api/v1/conversations/{id}/messages`
-- [ ] `GET /api/v1/dashboard/stats` — объём, AVG response time
+### 3.5 API для Inbox/Dashboard ✅
+- [x] `GET /api/v1/conversations` с фильтрами
+- [x] `GET /api/v1/conversations/{id}/messages`
+- [x] `GET /api/v1/dashboard/{overview,timeline,by-channel,by-manager,heatmap,sla-breaches,top-contacts,by-line,funnel,portal-users}`
 
-### 3.6 Frontend — переключение с mock на API
-- [ ] `apps/web/src/pages/InboxPage.tsx` → TanStack Query на `/conversations`
-- [ ] `DashboardPage.tsx` → реальные данные
-- [ ] Empty state «подключите Bitrix24» если интеграций нет
+### 3.6 Frontend — на реальных данных ✅
+- [x] InboxPage на TanStack Query (`/conversations`)
+- [x] DashboardPage с табами на реальных KPI и графиках
+- [x] Empty state «подключите Bitrix24»
 
 ---
 
-## Фаза 4 — Аутентификация и multi-tenancy
+## Фаза 4 — Аутентификация и multi-tenancy ✅
 
-- [ ] Модель `User`, `Tenant`, `TenantMembership` (role: admin/manager/agent/viewer)
-- [ ] JWT (access 15 мин + refresh httpOnly cookie)
-- [ ] Login/Register endpoints, password hashing (`argon2` или `bcrypt`)
-- [ ] `tenant_id` на всех моделях, Row-Level Security или фильтрация в репозиториях
-- [ ] Frontend: реальный Login, защищённые роуты, refresh-логика в `lib/api.ts`
+- [x] Модели `Tenant`, `User` (role admin/member). `TenantMembership` пока не вводим — один user = один tenant; расширим, когда понадобятся инвайты.
+- [x] JWT HS256 (access 15 мин), refresh в HttpOnly cookie (30 дней)
+- [x] `/api/v1/auth/{register,login,refresh,logout,me}`, argon2 для паролей, open registration с авто-tenant
+- [x] `tenant_id` на `Integration`, фильтрация в репозиториях через JOIN на интеграции
+- [x] Миграция данных в lifespan: осиротевшие интеграции привязываются к первому tenant'у
+- [x] Frontend: `AuthProvider` + `ProtectedRoute`, реальные Login/Register, авто-refresh при 401 в `lib/api.ts`, logout в AppLayout
+- [ ] TODO: TenantMembership + invites для команд (несколько user'ов в одном tenant'е)
+- [ ] TODO: роли manager/agent/viewer (сейчас только admin/member)
 
 ---
 
 ## Фаза 5 — Безопасность и production-готовность
 
-- [ ] **Шифрование секретов в БД**: `client_secret`, `access_token`, `refresh_token` через Fernet/AES-GCM, ключ из `.env` (`ENCRYPTION_KEY`)
-- [ ] **Alembic-миграции** вместо `Base.metadata.create_all` (удалить из lifespan)
+### Инфраструктурный рефакторинг (Alembic + Fernet + Redis/ARQ)
+
+Связка трёх PR. Делаются последовательно, мержатся в `dev` отдельно.
+
+- [x] **PR #1 — Alembic-миграции** вместо `Base.metadata.create_all` + DDL-патчей
+  в lifespan. Done в `dev` (commits `32ae0a7`, `ee30e2a`, `0974750`).
+  Реализовано: `alembic.ini`, `migrations/env.py` (async), `0001_initial.py`
+  (вся схема), отдельный compose-сервис `migrate` (one-shot), CI прогоняет
+  upgrade/downgrade/upgrade против Postgres. Тесты остаются на SQLite +
+  `Base.metadata.create_all` через `conftest.py`. Подводные камни на будущее:
+  `postgresql.ENUM(create_type=False)` обязателен (sa.Enum игнорирует флаг),
+  `.gitattributes` форсирует LF для `*.sh`/`Dockerfile` (Windows-чекаут).
+- [ ] **PR #2 — Fernet** для шифрования `client_secret`, `access_token`,
+  `refresh_token` в `integrations`. План: `cryptography>=43`,
+  `app/security/crypto.py` с `MultiFernet([current, previous])`, TypeDecorator
+  `EncryptedString` (имена колонок не меняются), `ENCRYPTION_KEY` в `.env`
+  обязателен для `app_env=production`. Alembic data-migration шифрует
+  существующие plain-значения. Двухэтапный rollout (fallback на plain
+  при чтении) пока не нужен — данных нет.
+- [x] **PR #3 — Redis + ARQ**. Воркер фоновых задач вынесен из API-процесса.
+  Реализовано: `redis:7-alpine` с AOF в compose, отдельный `worker`-контейнер
+  с тем же образом (entrypoint `run-worker` → `arq app.workers.settings.WorkerSettings`),
+  `app/workers/{settings,redis_pool,locks,tasks/bitrix_poll,tasks/bitrix_import}.py`.
+  Distributed lock per integration через `redis SET NX EX` (TTL=600с).
+  Diapatch_poll работает по self-rescheduling-паттерну (`_defer_by`), что
+  позволяет произвольный интервал из env, не только делители 60с.
+  `POST /integrations/{id}/import` теперь enqueue-ит задачу в Redis вместо
+  `BackgroundTasks`. Тесты на fakeredis (без отдельного Redis в CI).
+  Старый `poller.py` и asyncio-task в lifespan удалены — катовер чистый.
+
+### Прочее
+
 - [ ] Rate limiting (slowapi) per-tenant
 - [ ] Audit log (кто/когда менял интеграции, читал диалоги)
 - [ ] CSP-заголовки в nginx
@@ -151,10 +184,70 @@ SaaS-приложение для анализа коммуникационных
 
 ---
 
+## Фаза 5 — Аналитический дашборд (расширение) ✅
+
+Цель: превратить сводный экран в реальный инструмент аналитики, который
+показывает то, чего нет в стандартных отчётах Bitrix24.
+
+### 5А Схема и сборщики
+- [x] Расширение `Conversation`: `assigned_user_id`, `line_id`,
+  `first_message_at`, `first_agent_reply_at`, `closed_at`, `response_time_sec`
+- [x] Индексы: `(integration_id, assigned_user_id)`, `(integration_id, status, updated_at)`
+- [x] Новая таблица `PortalUser` (кэш операторов Bitrix24)
+- [x] `_recompute_conversation_analytics` в импортере (FRT по фактическим сообщениям)
+- [x] `_session_meta` — извлекаем `OPERATOR_ID`/`CONFIG_ID` из session
+- [x] `users_sync.py` — `sync_portal_users_if_stale` раз в сутки в поллере
+
+### 5Б Backend API (8 эндпоинтов)
+- [x] `GET /dashboard/overview` — KPI с дельтами к прошлому периоду
+- [x] `GET /dashboard/timeline` — точки по дням
+- [x] `GET /dashboard/by-channel` — donut
+- [x] `GET /dashboard/by-manager` — таблица операторов с JOIN PortalUser
+- [x] `GET /dashboard/heatmap` — день недели × час
+- [x] `GET /dashboard/sla-breaches` — открытые диалоги без ответа > N минут
+- [x] `GET /dashboard/top-contacts` — топ контактов
+- [x] `GET /dashboard/portal-users` — справочник операторов
+- [x] Унифицированные фильтры: `days`, `integration_id`, `channel`, `operator_id`
+- [x] Алиас старого `/stats` сохранён для обратной совместимости
+
+### 5В Frontend
+- [x] `DashboardPage` с табами «Обзор / Менеджеры / Контакты / AI»
+- [x] `DashboardFilterBar` — период/портал/канал/оператор
+- [x] `KPICard` с дельтой ±% (зелёный/красный с учётом higherIsBetter)
+- [x] Overview: 8 KPI, area-chart, donut, heatmap, SLA-список
+- [x] Managers: bar chart FRT топ-10 + таблица всех операторов с аватарами
+- [x] Contacts: топ-30 с количеством диалогов и сообщений
+
+### 5Г AI-таб (заглушки «скоро»)
+- [x] Hero-блок с описанием будущего раздела
+- [x] 8 lock-карточек: sentiment, темы, аномалии, quality score,
+  авто-резюме, churn risk, авто-теги, weekly insights
+- [x] Превью-визуализации для каждой карточки
+- [x] Реальная NLP — отложена в фазу 6
+
+## Фаза 4.5 — Wazzup-style подключение Bitrix24 ✅
+
+Цель: клиент НЕ вписывает client_id/secret вручную. Ставит наше тиражное
+приложение → возвращается в наш UI → вводит домен → готово.
+
+- [x] Глобальные `BITRIX24_APP_CLIENT_ID/SECRET` в `.env` (одно приложение
+  на всех клиентов)
+- [x] `/install/bitrix24` принимает POST от B24, сохраняет токены в Integration
+  (tenant_id=NULL — pending claim), вызывает `BX24.installFinish()` в iframe
+- [x] `POST /integrations/bitrix24/connect` (domain, label?) — находит pending
+  Integration по домену и привязывает к tenant. 404 с `status: not_installed`
+  если приложение не установлено. 409 если уже привязано к другому tenant.
+- [x] Удалён webhook-режим интеграции: модель, endpoint, UI, тесты (приёмник
+  событий `/webhooks/bitrix24` остался)
+- [x] Bitrix24Wizard упрощён: только домен + инструкция «поставьте приложение»
+- [x] Favicon SVG
+- [ ] TODO: вынести client_id/secret в таблицу Bitrix24App при появлении
+  нескольких приложений (.ru/.com или разные тарифы)
+
 ## Известные технические долги
 
-- [ ] `Base.metadata.create_all` в `lifespan` — заменить на Alembic
-- [ ] `client_secret` хранится в БД как plain text — зашифровать (Fernet)
+- [x] ~~`Base.metadata.create_all` в `lifespan` — заменить на Alembic~~ (PR #1)
+- [ ] `client_secret` хранится в БД как plain text — зашифровать (Fernet) — см. PR #2 в фазе 5
 - [ ] Bundle размер web > 500 KB — добавить code-splitting (`manualChunks`)
 - [ ] Pydantic warning: миграция `class Config` → `ConfigDict` сделана только в одном месте, проверить остальные
 - [ ] CI на feature-ветках не запускается (только PR/push в main/dev) — норма для GitHub Flow, но если хотите CI на любой push — добавить `branches: ['**']`
@@ -213,3 +306,47 @@ gh pr create --base dev  # или через GitHub UI
 - **Без секретов в коммитах** — всё через `.env` (в `.gitignore`)
 - **Frontend:** компоненты в `src/components/`, страницы в `src/pages/`, API-клиент в `src/lib/api.ts`
 - **Backend:** routers в `app/api/v1/`, модели в `app/db/models.py`, схемы в `app/schemas/`, коннекторы в `app/integrations/<name>/`
+
+---
+
+## Подтверждение email (на выбор перед стартом)
+
+Сейчас регистрация открыта без верификации почты. Перед коммерческим
+запуском нужно закрыть, чтобы нельзя было занимать чужие адреса и чтобы
+работали инвайты/восстановление пароля. Три рабочих варианта:
+
+### Вариант 1 — Hard-confirm (как у Gmail/Notion)
+Блокируем `/auth/login` до клика по ссылке из письма.
+- Поле `User.email_verified_at` (nullable) + таблица
+  `email_verification_tokens (token, user_id, expires_at, used_at)`
+- `/auth/register` создаёт пользователя, шлёт письмо, **не** возвращает
+  access_token (либо возвращает `{requires_verification: true}`)
+- `/auth/verify?token=...` → выставляет `email_verified_at`, удаляет токен
+- `/auth/resend-verification` (rate-limit 1/мин)
+- Плюс: чистая база, нельзя занять чужой email
+- Минус: лишний клик перед первым входом
+
+### Вариант 2 — Soft-confirm (рекомендую)
+Пускаем в продукт сразу, но баннер «подтвердите почту» + блокируем
+чувствительные действия (инвайты в tenant, смена email, экспорт).
+- Те же поля и токены, но `/auth/register` сразу выдаёт access_token
+- Декоратор `@requires_verified` на конкретных эндпоинтах
+- Плюс: лучший онбординг, не ломает текущий flow
+- Минус: чуть больше кода в enforcement
+
+### Вариант 3 — Magic-link вместо пароля
+Убираем пароли: email → ссылка → залогинен. Сам логин == подтверждение.
+- Плюс: проще auth-код (нет argon2, нет «forgot password»)
+- Минус: серьёзная перестройка работающего JWT/argon2 flow
+
+### Провайдер для писем
+Без этого ни один вариант не взлетит.
+
+| Провайдер | Setup | Цена |
+|---|---|---|
+| **SMTP через Yandex 360 / Mail.ru для бизнеса** | env + `aiosmtplib`, DKIM из коробки | бесплатно при корпоративной почте |
+| Resend / Postmark / SendGrid | API-ключ, шаблоны, дашборд доставляемости | trial → $20/мес |
+| Свой Postfix | DKIM/SPF/DMARC, репутация IP | дорого по времени |
+
+**Решение к моменту реализации:** TBD (вариант + провайдер).
+План реализации (HTML-шаблон, миграция, тесты) распишется после выбора.

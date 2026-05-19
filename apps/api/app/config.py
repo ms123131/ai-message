@@ -19,9 +19,33 @@ class Settings(BaseSettings):
     jwt_expires_min: int = 60
 
     bitrix24_oauth_token_url: str = "https://oauth.bitrix24.tech/oauth/token/"
-    # client_secret per-tenant — хранится в БД (Integration.client_secret).
-    # Глобальный secret оставлен опциональным для одно-арендных установок.
-    bitrix24_client_secret: str | None = Field(default=None)
+    # Глобальные client_id/secret НАШЕГО Bitrix24-приложения. Хранятся в .env,
+    # один на всех клиентов. Клиент устанавливает приложение на свой портал —
+    # B24 присылает токены в /install/bitrix24, мы сохраняем их и потом
+    # привязываем к tenant'у по доменному имени портала.
+    bitrix24_app_client_id: str | None = Field(default=None)
+    bitrix24_app_client_secret: str | None = Field(default=None)
+
+    # Публичный URL приложения — используется как handler для event.bind.
+    # Например, https://example.com или https://abc123.ngrok-free.app.
+    # В compose web проксирует /webhooks/ → api:8000/api/v1/webhooks/.
+    webhook_base_url: str | None = Field(default=None)
+
+    # Поллинг Bitrix24 Open Channels. Bitrix не доставляет OnOpenLineMessageAdd
+    # приложениям без зарегистрированного коннектора, поэтому подтягиваем
+    # сообщения периодическим вызовом im.recent.get → imopenlines.session.history.get.
+    # 0 — отключить поллер.
+    bitrix24_poll_interval_sec: int = 30
+    bitrix24_poll_window_days: int = 1
+
+    # Redis (брокер задач для arq-воркера). По умолчанию указывает на
+    # compose-сервис `redis`. Для локального dev без docker — `redis://localhost:6379/0`.
+    # В тестах подменяется на fakeredis через monkeypatch фабрики пула.
+    redis_url: str = "redis://redis:6379/0"
+    # TTL distributed-лока на портал при поллинге/импорте. Должен быть больше
+    # типичного времени одного прохода с запасом, чтобы лок не отпустился во
+    # время работы и не пустил параллельный заход.
+    worker_portal_lock_ttl_sec: int = 600
 
     @property
     def cors_origins_list(self) -> list[str]:

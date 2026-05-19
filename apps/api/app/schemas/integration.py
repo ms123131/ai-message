@@ -1,7 +1,7 @@
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.models import IntegrationMode, IntegrationStatus
 
@@ -21,28 +21,31 @@ class IntegrationOut(BaseModel):
     updated_at: datetime
 
 
-class Bitrix24OAuthCreate(BaseModel):
-    label: str = Field(min_length=2, max_length=200)
+class Bitrix24ConnectRequest(BaseModel):
+    """
+    Подключение портала по доменному имени.
+
+    Два режима:
+    - Marketplace (без client_id/secret): клиент сначала ставит наше
+      тиражное приложение, потом приходит сюда с доменом. Мы ищем
+      готовую запись (создана install-handler'ом) и привязываем к tenant.
+    - Local (с client_id/secret): для клиентов с собственным локальным
+      приложением в B24. Сохраняем credentials в Integration; токены
+      прилетают позже в /install/bitrix24, когда клиент установит/
+      переустановит приложение на портале.
+    """
+
     domain: str = Field(min_length=3, max_length=255)
-    client_id: str = Field(min_length=5, max_length=255)
-    client_secret: str = Field(min_length=5, max_length=255)
+    label: str | None = Field(default=None, max_length=200)
+    # Только для режима локального приложения.
+    client_id: str | None = Field(default=None, max_length=255)
+    client_secret: str | None = Field(default=None, max_length=255)
 
 
-class Bitrix24WebhookCreate(BaseModel):
-    label: str = Field(min_length=2, max_length=200)
-    webhook_url: HttpUrl
+class Bitrix24ConnectNotInstalled(BaseModel):
+    """Возвращается, когда интеграция по домену не найдена."""
 
-
-class OAuthExchange(BaseModel):
-    """Параметры из callback URL после авторизации на портале."""
-
-    integration_id: str
-    code: str = Field(min_length=10, max_length=255)
+    status: Literal["not_installed"] = "not_installed"
     domain: str
-    member_id: str | None = None
-    scope: str | None = None
-
-
-class IntegrationCreated(BaseModel):
-    integration: IntegrationOut
-    authorize_url: str | None = None
+    install_instructions_url: str
+    message: str
