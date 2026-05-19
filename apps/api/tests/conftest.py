@@ -6,6 +6,41 @@ os.environ.setdefault("DATABASE_URL", "sqlite+aiosqlite:///:memory:")
 os.environ.setdefault("APP_ENV", "test")
 
 
+class _FakeArqPool:
+    """Заглушка arq-пула для тестов: ничего не отправляет в Redis, просто
+    записывает вызовы. Эндпоинты вроде /integrations/{id}/import используют
+    `get_pool().enqueue_job(...)`, и без подмены этот вызов попытался бы
+    подключиться к настоящему Redis. В тестах нам достаточно проверить,
+    что job создан в БД — реальная очередь задач покрывается отдельно
+    через test_workers_tasks.
+    """
+
+    def __init__(self) -> None:
+        self.enqueued: list[tuple[str, tuple, dict]] = []
+
+    async def enqueue_job(self, name, *args, **kwargs):
+        self.enqueued.append((name, args, kwargs))
+        return type("FakeJob", (), {"job_id": "fake-job-id"})()
+
+    async def aclose(self) -> None:
+        pass
+
+
+@pytest.fixture(autouse=True)
+def _stub_arq_pool(monkeypatch):
+    """Авто-подмена: все тесты получают fake arq-пул без обращения к Redis."""
+    pool = _FakeArqPool()
+
+    async def _get_pool():
+        return pool
+
+    monkeypatch.setattr("app.workers.redis_pool.get_pool", _get_pool)
+    # close_pool читает глобальный `_pool`; в тестах он остаётся None
+    # (мы возвращаем fake, не сохраняя его в модуль), поэтому реальный
+    # close_pool становится no-op — патчить его не нужно.
+    return pool
+
+
 @pytest.fixture
 async def client():
     """
