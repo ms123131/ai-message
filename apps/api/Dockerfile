@@ -17,7 +17,8 @@ COPY app ./app
 COPY migrations ./migrations
 COPY alembic.ini ./alembic.ini
 COPY entrypoint.sh ./entrypoint.sh
-RUN chmod +x ./entrypoint.sh
+# sed убирает CR на случай, если файл закоммитили с CRLF (Windows checkout).
+RUN sed -i 's/\r$//' ./entrypoint.sh && chmod +x ./entrypoint.sh
 
 RUN mkdir -p /app/data
 
