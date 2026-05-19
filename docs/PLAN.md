@@ -114,8 +114,35 @@ SaaS-приложение для анализа коммуникационных
 
 ## Фаза 5 — Безопасность и production-готовность
 
-- [ ] **Шифрование секретов в БД**: `client_secret`, `access_token`, `refresh_token` через Fernet/AES-GCM, ключ из `.env` (`ENCRYPTION_KEY`)
-- [ ] **Alembic-миграции** вместо `Base.metadata.create_all` (удалить из lifespan)
+### Инфраструктурный рефакторинг (Alembic + Fernet + Redis/ARQ)
+
+Связка трёх PR. Делаются последовательно, мержатся в `dev` отдельно.
+
+- [x] **PR #1 — Alembic-миграции** вместо `Base.metadata.create_all` + DDL-патчей
+  в lifespan. Done в `dev` (commits `32ae0a7`, `ee30e2a`, `0974750`).
+  Реализовано: `alembic.ini`, `migrations/env.py` (async), `0001_initial.py`
+  (вся схема), отдельный compose-сервис `migrate` (one-shot), CI прогоняет
+  upgrade/downgrade/upgrade против Postgres. Тесты остаются на SQLite +
+  `Base.metadata.create_all` через `conftest.py`. Подводные камни на будущее:
+  `postgresql.ENUM(create_type=False)` обязателен (sa.Enum игнорирует флаг),
+  `.gitattributes` форсирует LF для `*.sh`/`Dockerfile` (Windows-чекаут).
+- [ ] **PR #2 — Fernet** для шифрования `client_secret`, `access_token`,
+  `refresh_token` в `integrations`. План: `cryptography>=43`,
+  `app/security/crypto.py` с `MultiFernet([current, previous])`, TypeDecorator
+  `EncryptedString` (имена колонок не меняются), `ENCRYPTION_KEY` в `.env`
+  обязателен для `app_env=production`. Alembic data-migration шифрует
+  существующие plain-значения. Двухэтапный rollout (fallback на plain
+  при чтении) пока не нужен — данных нет.
+- [ ] **PR #3 — Redis + ARQ**. Выносим поллер Bitrix24 и
+  `BackgroundTasks`-импорт из API-процесса в отдельный worker-контейнер.
+  План: `redis:7-alpine` + сервис `worker` в compose, `arq>=0.26`,
+  `app/workers/{settings,tasks/bitrix_poll,tasks/bitrix_import,tasks/users_sync}.py`,
+  cron в `WorkerSettings`, distributed lock на портал через
+  `redis SET NX EX`. После этого `api` можно масштабировать репликами без
+  дублирования REST-запросов в Bitrix24.
+
+### Прочее
+
 - [ ] Rate limiting (slowapi) per-tenant
 - [ ] Audit log (кто/когда менял интеграции, читал диалоги)
 - [ ] CSP-заголовки в nginx
@@ -218,8 +245,8 @@ SaaS-приложение для анализа коммуникационных
 
 ## Известные технические долги
 
-- [ ] `Base.metadata.create_all` в `lifespan` — заменить на Alembic
-- [ ] `client_secret` хранится в БД как plain text — зашифровать (Fernet)
+- [x] ~~`Base.metadata.create_all` в `lifespan` — заменить на Alembic~~ (PR #1)
+- [ ] `client_secret` хранится в БД как plain text — зашифровать (Fernet) — см. PR #2 в фазе 5
 - [ ] Bundle размер web > 500 KB — добавить code-splitting (`manualChunks`)
 - [ ] Pydantic warning: миграция `class Config` → `ConfigDict` сделана только в одном месте, проверить остальные
 - [ ] CI на feature-ветках не запускается (только PR/push в main/dev) — норма для GitHub Flow, но если хотите CI на любой push — добавить `branches: ['**']`

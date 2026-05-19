@@ -202,7 +202,14 @@ async def bitrix24_install_post(
 ) -> HTMLResponse:
     form: dict = {}
     try:
-        form = dict(await request.form())
+        # Bitrix24 шлёт часть полей (DOMAIN, PROTOCOL, LANG, APP_SID) в query string,
+        # а токены (AUTH_ID, REFRESH_ID, AUTH_EXPIRES, member_id) — в form-data.
+        # Объединяем оба источника, чтобы не потерять DOMAIN.
+        form = dict(request.query_params)
+        try:
+            form.update(dict(await request.form()))
+        except Exception:  # noqa: BLE001
+            pass
         await _save_install_tokens(session, form)
     except Exception as exc:  # noqa: BLE001
         logger.exception("install handler error: %s", exc)
