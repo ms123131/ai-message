@@ -2,6 +2,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any
 
+from sqlalchemy import JSON as SAJSON
 from sqlalchemy import (
     DateTime,
     ForeignKey,
@@ -11,7 +12,6 @@ from sqlalchemy import (
     Text,
     func,
 )
-from sqlalchemy import JSON as SAJSON
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -407,6 +407,163 @@ class PortalLine(Base):
         Index(
             "uq_portal_lines_integration_external",
             "integration_id",
+            "external_id",
+            unique=True,
+        ),
+    )
+
+
+class CrmEntityKind(str, Enum):
+    """Тип CRM-сущности, на которую может ссылаться диалог Open Channels."""
+
+    lead = "lead"
+    deal = "deal"
+    contact = "contact"
+    company = "company"
+
+
+class CrmStageSemantics(str, Enum):
+    """Семантика стадии (Bitrix SEMANTICS): P=won, L=lost, иначе in_progress."""
+
+    in_progress = "in_progress"
+    won = "won"
+    lost = "lost"
+
+
+class CrmEntity(Base):
+    """CRM-сущность портала (Lead/Deal/Contact/Company), привязанная к диалогу.
+
+    Заполняется импортёром по данным `imopenlines.session.history.get`
+    (блок session.crm) + дополнительным `crm.deal.list` / `crm.lead.list`
+    для подтягивания стадии, суммы и валюты. Семантика (won/lost) считается
+    в момент импорта по справочнику `PortalStage`.
+    """
+
+    __tablename__ = "crm_entities"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    integration_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("integrations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    kind: Mapped[CrmEntityKind] = mapped_column(
+        SAEnum(CrmEntityKind, name="crm_entity_kind"),
+        nullable=False,
+    )
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    title: Mapped[str | None] = mapped_column(String(500))
+    stage_external_id: Mapped[str | None] = mapped_column(String(64))
+    status_semantics: Mapped[CrmStageSemantics] = mapped_column(
+        SAEnum(CrmStageSemantics, name="crm_stage_semantics"),
+        default=CrmStageSemantics.in_progress,
+        nullable=False,
+    )
+    amount: Mapped[float | None] = mapped_column()  # тип определит диалект (Numeric для PG)
+    currency: Mapped[str | None] = mapped_column(String(8))
+    assigned_user_id: Mapped[str | None] = mapped_column(String(128))
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_crm_entities_integration_kind_external",
+            "integration_id",
+            "kind",
+            "external_id",
+            unique=True,
+        ),
+        Index(
+            "ix_crm_entities_integration_kind_status",
+            "integration_id",
+            "kind",
+            "status_semantics",
+        ),
+    )
+
+
+class ConversationCrmLink(Base):
+    """Связь диалог ↔ CRM-сущность (M:N).
+
+    Один диалог может породить несколько лидов/сделок (передача в разные
+    отделы, повторное обращение). Одна сделка может фигурировать в нескольких
+    диалогах (повторный контакт по той же сделке).
+    """
+
+    __tablename__ = "conversation_crm_links"
+
+    conversation_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("conversations.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    crm_entity_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("crm_entities.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    linked_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "ix_conversation_crm_links_entity",
+            "crm_entity_id",
+        ),
+    )
+
+
+class PortalStage(Base):
+    """Кэш справочника стадий лидов/сделок Bitrix24 (`crm.status.list`).
+
+    Используется импортёром для перевода `STAGE_ID` сделки → семантика
+    (won / lost / in_progress) без обращения к Bitrix24 на каждый ряд.
+    Заполняется лениво один раз на импорт.
+    """
+
+    __tablename__ = "portal_stages"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    integration_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("integrations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    entity_kind: Mapped[CrmEntityKind] = mapped_column(
+        SAEnum(CrmEntityKind, name="crm_entity_kind"),
+        nullable=False,
+    )
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    name: Mapped[str | None] = mapped_column(String(255))
+    semantics: Mapped[CrmStageSemantics] = mapped_column(
+        SAEnum(CrmStageSemantics, name="crm_stage_semantics"),
+        default=CrmStageSemantics.in_progress,
+        nullable=False,
+    )
+    sort: Mapped[int | None] = mapped_column(Integer)
+
+    last_synced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_portal_stages_integration_kind_external",
+            "integration_id",
+            "entity_kind",
             "external_id",
             unique=True,
         ),

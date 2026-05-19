@@ -23,11 +23,11 @@
 
 from __future__ import annotations
 
+import csv
+import io
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-import csv
-import io
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -39,7 +39,11 @@ from app.db import get_session
 from app.db.models import (
     Conversation,
     ConversationChannel,
+    ConversationCrmLink,
     ConversationStatus,
+    CrmEntity,
+    CrmEntityKind,
+    CrmStageSemantics,
     Integration,
     Message,
     PortalLine,
@@ -134,6 +138,9 @@ class OverviewResponse(BaseModel):
     returning_contacts_pct: KPI  # % контактов с >1 диалогом
     # Производные.
     avg_messages_per_conv: KPI
+    # Конверсия в CRM (фаза 5Е — CRM-минимум). Считаются по диалогам в окне.
+    conversion_to_deal_pct: KPI  # % диалогов с привязанной сделкой
+    win_rate_pct: KPI  # won / (won+lost) среди связанных сделок
 
 
 class DayPoint(BaseModel):
@@ -434,6 +441,55 @@ async def overview(
     )
     open_now = int((await session.execute(open_now_stmt)).scalar_one() or 0)
 
+    async def conv_with_deal(start: datetime, end: datetime) -> float:
+        stmt = (
+            select(func.count(distinct(Conversation.id)))
+            .join(ConversationCrmLink, ConversationCrmLink.conversation_id == Conversation.id)
+            .join(CrmEntity, CrmEntity.id == ConversationCrmLink.crm_entity_id)
+            .where(
+                *filters.conv_filters,
+                Conversation.created_at >= start,
+                Conversation.created_at < end,
+                CrmEntity.kind == CrmEntityKind.deal,
+            )
+        )
+        return await _scalar_or_zero(session, stmt)
+
+    async def conversion_pct(start: datetime, end: datetime) -> float:
+        total = await conversations_in(start, end)
+        if not total:
+            return 0.0
+        with_deal = await conv_with_deal(start, end)
+        return (with_deal / total) * 100.0
+
+    async def win_rate(start: datetime, end: datetime) -> float:
+        # Считаем уникальные сделки, связанные с диалогами окна, в разрезе
+        # семантики стадии. Знаменатель — won+lost (in_progress не учитываем).
+        stmt = (
+            select(
+                CrmEntity.status_semantics,
+                func.count(distinct(CrmEntity.id)),
+            )
+            .join(ConversationCrmLink, ConversationCrmLink.crm_entity_id == CrmEntity.id)
+            .join(Conversation, Conversation.id == ConversationCrmLink.conversation_id)
+            .where(
+                *filters.conv_filters,
+                Conversation.created_at >= start,
+                Conversation.created_at < end,
+                CrmEntity.kind == CrmEntityKind.deal,
+            )
+            .group_by(CrmEntity.status_semantics)
+        )
+        rows = (await session.execute(stmt)).all()
+        counts: dict[CrmStageSemantics, int] = {
+            sem: int(cnt or 0) for sem, cnt in rows
+        }
+        won = counts.get(CrmStageSemantics.won, 0)
+        lost = counts.get(CrmStageSemantics.lost, 0)
+        if won + lost == 0:
+            return 0.0
+        return (won / (won + lost)) * 100.0
+
     async def closed_in(start: datetime, end: datetime) -> float:
         stmt = select(func.count(Conversation.id)).where(
             *filters.conv_filters,
@@ -459,6 +515,10 @@ async def overview(
     prev_ret = await returning_pct(prev_from, prev_to)
     cur_closed = await closed_in(range_from, range_to)
     prev_closed = await closed_in(prev_from, prev_to)
+    cur_conv_deal = await conversion_pct(range_from, range_to)
+    prev_conv_deal = await conversion_pct(prev_from, prev_to)
+    cur_win = await win_rate(range_from, range_to)
+    prev_win = await win_rate(prev_from, prev_to)
 
     avg_now = cur_msgs / cur_convs if cur_convs else 0.0
     avg_prev = prev_msgs / prev_convs if prev_convs else 0.0
@@ -477,6 +537,138 @@ async def overview(
         unique_contacts=_kpi(cur_uniq, prev_uniq),
         returning_contacts_pct=_kpi(cur_ret, prev_ret),
         avg_messages_per_conv=_kpi(avg_now, avg_prev),
+        conversion_to_deal_pct=_kpi(cur_conv_deal, prev_conv_deal),
+        win_rate_pct=_kpi(cur_win, prev_win),
+    )
+
+
+# ---------------------------------------------------------------------------
+# /funnel — диалоги → лиды → сделки → выигрыши
+# ---------------------------------------------------------------------------
+
+
+class FunnelStage(BaseModel):
+    key: str  # conversations|with_lead|with_deal|with_won_deal|with_lost_deal
+    label: str
+    count: int
+
+
+class FunnelResponse(BaseModel):
+    range_days: int
+    range_from: datetime
+    range_to: datetime
+    stages: list[FunnelStage]
+    conversion_to_lead_pct: float
+    conversion_to_deal_pct: float
+    win_rate_pct: float
+    revenue_won: float
+    currency: str | None  # доминирующая валюта won-сделок (best-effort)
+
+
+@router.get("/funnel", response_model=FunnelResponse)
+async def funnel(
+    days: int = Query(30, ge=1, le=365),
+    filters: _Filters = Depends(_filters_dep),
+    session: AsyncSession = Depends(get_session),
+) -> FunnelResponse:
+    """Воронка диалоги → лиды → сделки → выигранные сделки.
+
+    Каждая ступень — количество диалогов, у которых есть привязка к CRM
+    нужного типа/семантики. Так считать важнее, чем считать сами сущности:
+    один диалог с тремя сделками — это один путь, а не три.
+
+    `revenue_won` — сумма `OPPORTUNITY` уникальных won-сделок, привязанных
+    к диалогам окна. Валюта — самая частая среди won-сделок (если разнобой —
+    цифру стоит читать как «в смешанной валюте»; UI решает, как отображать).
+    """
+    range_from, range_to = _window(days)
+
+    async def conv_count() -> int:
+        stmt = select(func.count(Conversation.id)).where(
+            *filters.conv_filters,
+            Conversation.created_at >= range_from,
+            Conversation.created_at < range_to,
+        )
+        return int((await session.execute(stmt)).scalar_one() or 0)
+
+    async def conv_count_with(
+        kind: CrmEntityKind,
+        semantics: CrmStageSemantics | None = None,
+    ) -> int:
+        conds = [
+            *filters.conv_filters,
+            Conversation.created_at >= range_from,
+            Conversation.created_at < range_to,
+            CrmEntity.kind == kind,
+        ]
+        if semantics is not None:
+            conds.append(CrmEntity.status_semantics == semantics)
+        stmt = (
+            select(func.count(distinct(Conversation.id)))
+            .join(
+                ConversationCrmLink,
+                ConversationCrmLink.conversation_id == Conversation.id,
+            )
+            .join(CrmEntity, CrmEntity.id == ConversationCrmLink.crm_entity_id)
+            .where(*conds)
+        )
+        return int((await session.execute(stmt)).scalar_one() or 0)
+
+    total = await conv_count()
+    with_lead = await conv_count_with(CrmEntityKind.lead)
+    with_deal = await conv_count_with(CrmEntityKind.deal)
+    with_won = await conv_count_with(CrmEntityKind.deal, CrmStageSemantics.won)
+    with_lost = await conv_count_with(CrmEntityKind.deal, CrmStageSemantics.lost)
+
+    # Revenue по уникальным won-сделкам в окне.
+    rev_stmt = (
+        select(
+            func.coalesce(func.sum(distinct(CrmEntity.amount)), 0.0),
+            CrmEntity.currency,
+        )
+        .join(
+            ConversationCrmLink,
+            ConversationCrmLink.crm_entity_id == CrmEntity.id,
+        )
+        .join(Conversation, Conversation.id == ConversationCrmLink.conversation_id)
+        .where(
+            *filters.conv_filters,
+            Conversation.created_at >= range_from,
+            Conversation.created_at < range_to,
+            CrmEntity.kind == CrmEntityKind.deal,
+            CrmEntity.status_semantics == CrmStageSemantics.won,
+        )
+        .group_by(CrmEntity.currency)
+        .order_by(desc(func.coalesce(func.sum(distinct(CrmEntity.amount)), 0.0)))
+    )
+    rev_rows = (await session.execute(rev_stmt)).all()
+    revenue_won = float(rev_rows[0][0]) if rev_rows else 0.0
+    currency = rev_rows[0][1] if rev_rows else None
+
+    conv_to_lead = (with_lead / total * 100.0) if total else 0.0
+    conv_to_deal = (with_deal / total * 100.0) if total else 0.0
+    win_rate_v = (
+        (with_won / (with_won + with_lost) * 100.0)
+        if (with_won + with_lost)
+        else 0.0
+    )
+
+    return FunnelResponse(
+        range_days=days,
+        range_from=range_from,
+        range_to=range_to,
+        stages=[
+            FunnelStage(key="conversations", label="Диалогов", count=total),
+            FunnelStage(key="with_lead", label="С лидом", count=with_lead),
+            FunnelStage(key="with_deal", label="Со сделкой", count=with_deal),
+            FunnelStage(key="with_won_deal", label="Сделка выиграна", count=with_won),
+            FunnelStage(key="with_lost_deal", label="Сделка проиграна", count=with_lost),
+        ],
+        conversion_to_lead_pct=conv_to_lead,
+        conversion_to_deal_pct=conv_to_deal,
+        win_rate_pct=win_rate_v,
+        revenue_won=revenue_won,
+        currency=currency,
     )
 
 
@@ -851,7 +1043,7 @@ async def sla_breaches(
         pu_index = {(p.integration_id, p.external_id): p for p in pus}
 
     items: list[SLABreachItem] = []
-    for conv, last_msg, last_ts in rows:
+    for conv, _last_msg, last_ts in rows:
         if last_ts.tzinfo is None:
             last_ts = last_ts.replace(tzinfo=UTC)
         minutes_waiting = int((now - last_ts).total_seconds() // 60)
@@ -1001,7 +1193,7 @@ async def by_line(
         )
     ).scalars().all()
     line_index: dict[tuple[str, str], PortalLine] = {
-        (l.integration_id, l.external_id): l for l in lines
+        (ln.integration_id, ln.external_id): ln for ln in lines
     }
 
     result: list[LineRow] = []
