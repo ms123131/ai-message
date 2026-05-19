@@ -55,24 +55,22 @@ SaaS-приложение для анализа коммуникационных
 
 ---
 
-## Фаза 3 — Реальные данные из Bitrix24 (NEXT)
+## Фаза 3 — Реальные данные из Bitrix24 ✅ (с двумя открытыми TODO в 3.3)
 
-Цель: чтобы wizard, Inbox и Dashboard показывали **реальные данные с подключённого портала**, а не mock'и.
+Цель: чтобы wizard, Inbox и Dashboard показывали реальные данные. Достигнута.
 
-### 3.1 Bitrix24 коннектор — полноценный
-- [ ] `app/integrations/bitrix24/client.py` — REST-клиент с автоматическим обновлением `access_token` по `refresh_token` за 5 минут до истечения
-- [ ] Throttling: 2 req/sec на портал (`asyncio.Semaphore` + sleep)
-- [ ] Поддержка `batch` для группировки до 50 запросов
-- [ ] Обработка ошибок `expired_token` → авто-refresh → retry
-- [ ] Поддержка webhook-режима (вызов через сохранённый `webhook_url`)
+### 3.1 Bitrix24 коннектор ✅
+- [x] REST-клиент `client.py` с авто-refresh `access_token` за 5 минут до истечения
+- [x] Throttling 2 req/sec на портал (`asyncio.Semaphore`)
+- [x] `batch()` до 50 запросов
+- [x] Retry на `expired_token` (один проход после refresh)
+- [x] ~~Webhook-режим~~ удалён в фазе 4.5 (тиражное приложение — только OAuth)
 
-### 3.2 Подписка на события
-- [ ] При создании OAuth-подключения автоматически вызывать `event.bind` для:
-  - `OnImOpenLinesMessageAdd` (новое сообщение в Open Channels)
-  - `OnImOpenLinesSessionStart` / `OnImOpenLinesSessionFinish`
-  - `OnCrmActivityAdd` с `TYPE_ID=EMAIL` (входящие письма через CRM)
-- [ ] Endpoint `/webhooks/bitrix24`: валидация `auth[application_token]`, dedup по `event_handler_id`
-- [ ] Постановка событий в очередь (на старте — `asyncio.Queue` + воркер в lifespan; позже — Redis/Celery)
+### 3.2 Подписка на события — заменена поллингом ✅
+Универсальное приложение без своего коннектора не получает `OnImOpenLinesMessageAdd`
+от B24. Вместо `event.bind` сделан фоновый поллер `poller.py` (`im.recent.get` +
+`imopenlines.session.history.get`). Commit `852dc3b`. Поллер уезжает в worker
+в PR #3 (Redis + ARQ).
 
 ### 3.3 Исторический импорт ✅ (MVP)
 - [x] Команда `python -m app.cli import-bitrix24 --integration-id <id> --days 30`
@@ -81,21 +79,21 @@ SaaS-приложение для анализа коммуникационных
 - [ ] TODO: полная история всех закрытых сессий чата (сейчас берём только последнюю, видимую через history.get)
 - [ ] TODO: качать вложения с Bitrix Disk (сейчас сохраняем только метаданные)
 
-### 3.4 Модель данных (расширение)
-- [ ] `Conversation` (id, integration_id, external_id, channel, contact_name, status, created_at)
-- [ ] `Message` (id, conversation_id, external_id, sender_type [client/agent/bot], text, attachments_json, sent_at)
-- [ ] Индексы: `(integration_id, created_at desc)`, `(conversation_id, sent_at)`
-- [ ] Полнотекстовый поиск Postgres (`tsvector` + GIN)
+### 3.4 Модель данных ✅
+- [x] `Conversation`, `Message` с нужными полями (см. `app/db/models.py`)
+- [x] Индексы: `(integration_id, created_at)`, `(conversation_id, sent_at)`,
+  `(integration_id, status, updated_at)`, уникальные дедуп-индексы
+- [x] FTS по `messages.tsv` (Postgres tsvector + GIN-индекс) в `0001_initial.py`
 
-### 3.5 API для Inbox/Dashboard на реальных данных
-- [ ] `GET /api/v1/conversations` — фильтры (channel, integration_id, дата)
-- [ ] `GET /api/v1/conversations/{id}/messages`
-- [ ] `GET /api/v1/dashboard/stats` — объём, AVG response time
+### 3.5 API для Inbox/Dashboard ✅
+- [x] `GET /api/v1/conversations` с фильтрами
+- [x] `GET /api/v1/conversations/{id}/messages`
+- [x] `GET /api/v1/dashboard/{overview,timeline,by-channel,by-manager,heatmap,sla-breaches,top-contacts,by-line,funnel,portal-users}`
 
-### 3.6 Frontend — переключение с mock на API
-- [ ] `apps/web/src/pages/InboxPage.tsx` → TanStack Query на `/conversations`
-- [ ] `DashboardPage.tsx` → реальные данные
-- [ ] Empty state «подключите Bitrix24» если интеграций нет
+### 3.6 Frontend — на реальных данных ✅
+- [x] InboxPage на TanStack Query (`/conversations`)
+- [x] DashboardPage с табами на реальных KPI и графиках
+- [x] Empty state «подключите Bitrix24»
 
 ---
 
