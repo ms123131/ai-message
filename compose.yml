@@ -29,6 +29,21 @@ services:
     ports:
       - "5432:5432"
 
+  migrate:
+    # One-shot контейнер: применяет миграции Alembic и выходит.
+    # api ждёт его успешного завершения через service_completed_successfully.
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    command: ["run-migrations"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: ${APP_ENV:-production}
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aimessage}:${POSTGRES_PASSWORD:-aimessage}@postgres:5432/${POSTGRES_DB:-aimessage}
+
   api:
     build:
       context: ./apps/api
@@ -37,6 +52,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     environment:
       APP_ENV: ${APP_ENV:-production}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aimessage}:${POSTGRES_PASSWORD:-aimessage}@postgres:5432/${POSTGRES_DB:-aimessage}

@@ -12,11 +12,12 @@ WORKDIR /app
 COPY pyproject.toml ./
 RUN pip install --upgrade pip && pip install .
 
-# Код приложения
+# Код приложения и миграции
 COPY app ./app
-
-# Миграции (alembic.ini + migrations/) добавим, когда схема стабилизируется.
-# Пока таблицы создаются автоматически в lifespan через SQLAlchemy.
+COPY migrations ./migrations
+COPY alembic.ini ./alembic.ini
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 RUN mkdir -p /app/data
 
@@ -25,4 +26,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s \
     CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/api/v1/health',timeout=3).status==200 else 1)" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["./entrypoint.sh"]
+CMD ["serve"]

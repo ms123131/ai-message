@@ -3,14 +3,12 @@ from enum import Enum
 from typing import Any
 
 from sqlalchemy import (
-    DDL,
     DateTime,
     ForeignKey,
     Index,
     Integer,
     String,
     Text,
-    event,
     func,
 )
 from sqlalchemy import JSON as SAJSON
@@ -454,22 +452,6 @@ class ImportJob(Base):
     )
 
 
-# Полнотекстовый поиск по сообщениям — только Postgres.
-# Подключаем generated-колонку `tsv` и GIN-индекс через DDL-хук, чтобы
-# SQLite в тестах работал без TSVECTOR.
-_FTS_LANG = "russian"
-
-
-@event.listens_for(Message.__table__, "after_create")
-def _create_messages_fts(target, connection, **kw) -> None:  # pragma: no cover
-    if connection.dialect.name != "postgresql":
-        return
-    connection.execute(
-        DDL(
-            "ALTER TABLE messages ADD COLUMN IF NOT EXISTS tsv tsvector "
-            f"GENERATED ALWAYS AS (to_tsvector('{_FTS_LANG}', coalesce(text, ''))) STORED"
-        )
-    )
-    connection.execute(
-        DDL("CREATE INDEX IF NOT EXISTS ix_messages_tsv ON messages USING GIN (tsv)")
-    )
+# Полнотекстовый поиск по сообщениям (колонка `tsv` + GIN-индекс) создаётся
+# Alembic-миграцией для PostgreSQL. Тесты на SQLite используют
+# `Base.metadata.create_all` напрямую и обходятся без FTS.
