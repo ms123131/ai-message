@@ -47,25 +47,44 @@ def _is_pg() -> bool:
 def upgrade() -> None:
     # ENUM-типы создаём заранее, чтобы переиспользовать в нескольких таблицах
     # без падения на повторном CREATE TYPE.
-    user_role = sa.Enum("admin", "member", name="user_role", create_type=False)
-    integration_kind = sa.Enum("bitrix24", name="integration_kind", create_type=False)
-    integration_mode = sa.Enum("oauth", name="integration_mode", create_type=False)
-    integration_status = sa.Enum(
+    # Используем postgresql.ENUM с create_type=False — только этот класс
+    # уважает флаг и не пытается CREATE TYPE при create_table.
+    # Сами типы создаём отдельно перед таблицами.
+    user_role = postgresql.ENUM(
+        "admin", "member", name="user_role", create_type=False
+    )
+    integration_kind = postgresql.ENUM(
+        "bitrix24", name="integration_kind", create_type=False
+    )
+    integration_mode = postgresql.ENUM(
+        "oauth", name="integration_mode", create_type=False
+    )
+    integration_status = postgresql.ENUM(
         "pending", "connected", "error", name="integration_status", create_type=False
     )
-    conversation_channel = sa.Enum(
+    conversation_channel = postgresql.ENUM(
         *CONVERSATION_CHANNEL_VALUES,
         name="conversation_channel",
         create_type=False,
     )
-    conversation_status = sa.Enum(
+    conversation_status = postgresql.ENUM(
         "open", "closed", name="conversation_status", create_type=False
     )
-    message_sender_type = sa.Enum(
-        "client", "agent", "bot", "system", name="message_sender_type", create_type=False
+    message_sender_type = postgresql.ENUM(
+        "client",
+        "agent",
+        "bot",
+        "system",
+        name="message_sender_type",
+        create_type=False,
     )
-    import_job_status = sa.Enum(
-        "pending", "running", "done", "failed", name="import_job_status", create_type=False
+    import_job_status = postgresql.ENUM(
+        "pending",
+        "running",
+        "done",
+        "failed",
+        name="import_job_status",
+        create_type=False,
     )
 
     if _is_pg():
@@ -346,7 +365,7 @@ def upgrade() -> None:
         ),
         sa.Column(
             "channel",
-            sa.Enum(
+            postgresql.ENUM(
                 *CONVERSATION_CHANNEL_VALUES,
                 name="conversation_channel",
                 create_type=False,
