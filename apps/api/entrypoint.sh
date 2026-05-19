@@ -1,6 +1,7 @@
 #!/usr/bin/env sh
 # Entrypoint Docker-образа api.
 # - run-migrations: применить миграции и выйти (для one-shot сервиса в compose)
+# - run-worker: запустить arq-воркер фоновых задач (отдельный контейнер)
 # - serve (default): только запустить uvicorn (миграции — отдельным сервисом)
 set -eu
 
@@ -10,6 +11,10 @@ case "$cmd" in
   run-migrations)
     echo "[entrypoint] alembic upgrade head"
     exec alembic upgrade head
+    ;;
+  run-worker)
+    echo "[entrypoint] starting arq worker"
+    exec arq app.workers.settings.WorkerSettings
     ;;
   serve)
     echo "[entrypoint] starting uvicorn"

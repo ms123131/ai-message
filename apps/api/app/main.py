@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -9,7 +8,7 @@ from app import __version__
 from app.api.v1 import api_router
 from app.config import get_settings
 from app.db.session import engine
-from app.integrations.bitrix24.poller import run_forever as run_bitrix24_poller
+from app.workers.redis_pool import close_pool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger("ai-message")
@@ -18,20 +17,14 @@ logger = logging.getLogger("ai-message")
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     # Схема БД создаётся миграциями Alembic вне процесса API
-    # (см. compose-сервис `migrate` и Dockerfile entrypoint).
+    # (см. compose-сервис `migrate`).
+    # Фоновый поллинг и импорт теперь делает отдельный воркер-контейнер
+    # (`compose worker`), API только enqueue-ит задачи в Redis.
     logger.info("ai-message api v%s started", __version__)
-
-    poller_task = asyncio.create_task(run_bitrix24_poller(), name="bitrix24-poller")
     try:
         yield
     finally:
-        poller_task.cancel()
-        try:
-            await poller_task
-        except asyncio.CancelledError:
-            pass
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("poller exited with error: %s", exc)
+        await close_pool()
         await engine.dispose()
 
 

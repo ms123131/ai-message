@@ -131,13 +131,16 @@ SaaS-приложение для анализа коммуникационных
   обязателен для `app_env=production`. Alembic data-migration шифрует
   существующие plain-значения. Двухэтапный rollout (fallback на plain
   при чтении) пока не нужен — данных нет.
-- [ ] **PR #3 — Redis + ARQ**. Выносим поллер Bitrix24 и
-  `BackgroundTasks`-импорт из API-процесса в отдельный worker-контейнер.
-  План: `redis:7-alpine` + сервис `worker` в compose, `arq>=0.26`,
-  `app/workers/{settings,tasks/bitrix_poll,tasks/bitrix_import,tasks/users_sync}.py`,
-  cron в `WorkerSettings`, distributed lock на портал через
-  `redis SET NX EX`. После этого `api` можно масштабировать репликами без
-  дублирования REST-запросов в Bitrix24.
+- [x] **PR #3 — Redis + ARQ**. Воркер фоновых задач вынесен из API-процесса.
+  Реализовано: `redis:7-alpine` с AOF в compose, отдельный `worker`-контейнер
+  с тем же образом (entrypoint `run-worker` → `arq app.workers.settings.WorkerSettings`),
+  `app/workers/{settings,redis_pool,locks,tasks/bitrix_poll,tasks/bitrix_import}.py`.
+  Distributed lock per integration через `redis SET NX EX` (TTL=600с).
+  Diapatch_poll работает по self-rescheduling-паттерну (`_defer_by`), что
+  позволяет произвольный интервал из env, не только делители 60с.
+  `POST /integrations/{id}/import` теперь enqueue-ит задачу в Redis вместо
+  `BackgroundTasks`. Тесты на fakeredis (без отдельного Redis в CI).
+  Старый `poller.py` и asyncio-task в lifespan удалены — катовер чистый.
 
 ### Прочее
 

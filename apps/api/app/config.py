@@ -38,6 +38,15 @@ class Settings(BaseSettings):
     bitrix24_poll_interval_sec: int = 30
     bitrix24_poll_window_days: int = 1
 
+    # Redis (брокер задач для arq-воркера). По умолчанию указывает на
+    # compose-сервис `redis`. Для локального dev без docker — `redis://localhost:6379/0`.
+    # В тестах подменяется на fakeredis через monkeypatch фабрики пула.
+    redis_url: str = "redis://redis:6379/0"
+    # TTL distributed-лока на портал при поллинге/импорте. Должен быть больше
+    # типичного времени одного прохода с запасом, чтобы лок не отпустился во
+    # время работы и не пустил параллельный заход.
+    worker_portal_lock_ttl_sec: int = 600
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,14 +18,12 @@ from app.db.models import (
     IntegrationStatus,
 )
 from app.db.models import User as UserModel
-from app.db.session import AsyncSessionLocal
 from app.integrations.bitrix24.client import BitrixClient
 from app.integrations.bitrix24.events import (
     SUPPORTED_EVENTS,
     bind_events,
     unbind_events,
 )
-from app.integrations.bitrix24.importer import run_import_job
 from app.schemas.integration import (
     Bitrix24ConnectNotInstalled,
     Bitrix24ConnectRequest,
@@ -288,16 +286,6 @@ async def unsubscribe_events(
     return {"handler": handler, "events": SUPPORTED_EVENTS, "results": results}
 
 
-async def _run_import_background(integration_id: str, job_id: str) -> None:
-    async with AsyncSessionLocal() as session:
-        job = await session.get(ImportJob, job_id)
-        integration = await session.get(Integration, integration_id)
-        if not job or not integration:
-            return
-        async with BitrixClient(integration, session) as client:
-            await run_import_job(client, session, job, integration)
-
-
 @router.post(
     "/{integration_id}/import",
     response_model=ImportJobOut,
@@ -305,12 +293,18 @@ async def _run_import_background(integration_id: str, job_id: str) -> None:
 )
 async def trigger_import(
     integration_id: str,
-    background: BackgroundTasks,
     days: int = Query(30, ge=1, le=180),
     session: AsyncSession = Depends(get_session),
     user: UserModel = Depends(get_current_user),
 ) -> ImportJob:
+    """Создаёт ImportJob (pending) и ставит задачу в arq-очередь.
+
+    Реально импорт делает воркер (см. `app/workers/tasks/bitrix_import.py`).
+    Эндпоинт возвращает 202 + job сразу, без блокировки HTTP-обработчика.
+    """
     import secrets
+
+    from app.workers.redis_pool import get_pool
 
     integration = await _get_owned(session, integration_id, user)
     job = ImportJob(
@@ -321,7 +315,9 @@ async def trigger_import(
     session.add(job)
     await session.commit()
     await session.refresh(job)
-    background.add_task(_run_import_background, integration.id, job.id)
+
+    pool = await get_pool()
+    await pool.enqueue_job("run_import_job_task", integration.id, job.id)
     return job
 
 
