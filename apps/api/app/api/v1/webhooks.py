@@ -141,6 +141,23 @@ async def bitrix24_webhook(
         return {"status": "accepted", "event": event, "result": "duplicate"}
 
     await session.commit()
+
+    # Дотягиваем CRM-привязки/метаданные сессии асинхронно: webhook отдаёт
+    # только текст сообщения, без блока CRM. Без этого диалоги, видимые
+    # только через webhook (а не через im.recent.get у пользователя токена),
+    # никогда не получают сделок → дашборд показывает «Со сделкой 0».
+    try:
+        from app.workers.redis_pool import get_pool
+
+        pool = await get_pool()
+        await pool.enqueue_job(
+            "enrich_conversation_from_chat",
+            integration.id,
+            parsed.chat_id,
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("failed to enqueue enrich for chat %s: %s", parsed.chat_id, exc)
+
     return {
         "status": "accepted",
         "event": event,

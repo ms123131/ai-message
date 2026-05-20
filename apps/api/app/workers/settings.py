@@ -15,6 +15,7 @@ import logging
 from app.workers.redis_pool import redis_settings
 from app.workers.tasks.bitrix_import import run_import_job_task
 from app.workers.tasks.bitrix_poll import dispatch_poll, poll_integration
+from app.workers.tasks.conversation_enrich import enrich_conversation_from_chat
 from app.workers.tasks.crm_sync import dispatch_crm_sync, sync_crm_for_integration
 from app.workers.tasks.sentiment import analyze_sentiment_for_integration
 
@@ -45,6 +46,7 @@ class WorkerSettings:
         run_import_job_task,
         dispatch_crm_sync,
         sync_crm_for_integration,
+        enrich_conversation_from_chat,
         analyze_sentiment_for_integration,
     ]
     redis_settings = redis_settings()

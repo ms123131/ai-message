@@ -383,6 +383,50 @@ async def trigger_sentiment_analysis(
     }
 
 
+@router.post(
+    "/{integration_id}/enrich-conversations",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@limiter.limit("3/minute")
+async def trigger_enrich_conversations(
+    request: Request,  # noqa: ARG001 — нужен slowapi
+    integration_id: str,
+    limit: int = Query(500, ge=1, le=2000),
+    session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Бэкфил: ставит enrich-задачу на каждый известный диалог интеграции.
+
+    Используется, когда диалоги пришли через webhook и у них нет CRM-привязок:
+    дашборд показывает «Со сделкой 0», хотя в Bitrix24 сделки есть. После
+    переподключения OAuth/первого OAuth — дёрнуть один раз.
+    """
+    from app.db.models import Conversation
+    from app.workers.redis_pool import get_pool
+
+    integration = await _get_owned(session, integration_id, user)
+    rows = (
+        await session.execute(
+            select(Conversation.external_id)
+            .where(Conversation.integration_id == integration.id)
+            .order_by(desc(Conversation.created_at))
+            .limit(limit)
+        )
+    ).all()
+    chat_ids = [r[0] for r in rows if r[0]]
+
+    pool = await get_pool()
+    for chat_id in chat_ids:
+        await pool.enqueue_job(
+            "enrich_conversation_from_chat", integration.id, chat_id
+        )
+    return {
+        "status": "accepted",
+        "integration_id": integration.id,
+        "enqueued": len(chat_ids),
+    }
+
+
 @router.get("/{integration_id}/import-jobs", response_model=list[ImportJobOut])
 async def list_import_jobs(
     integration_id: str,

@@ -164,7 +164,10 @@ class BitrixClient:
             )
         except BitrixOAuthError:
             i.status = IntegrationStatus.error
-            await self.session.flush()
+            # commit, а не flush: при ошибке вызывающий код закрывает сессию
+            # без commit (как poll_integration в try/except), и статус откатывается —
+            # UI продолжает показывать integration=connected, хотя refresh мёртв.
+            await self.session.commit()
             raise
         i.access_token = tokens.access_token
         i.refresh_token = tokens.refresh_token
