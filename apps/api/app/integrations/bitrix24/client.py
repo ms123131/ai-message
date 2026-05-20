@@ -90,6 +90,34 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
+def _flatten_params(
+    params: dict[str, Any], _prefix: str = ""
+) -> list[tuple[str, str]]:
+    """Превращает вложенный dict в плоский PHP-стиль для x-www-form-urlencoded.
+
+    Bitrix24 ждёт ключи вида `filter[>=DATE_CREATE]=...`, `order[ID]=DESC`,
+    `filter[@ID][0]=1&filter[@ID][1]=2`. Стандартный `urlencode` сериализует
+    dict через repr — это ломает любой нетривиальный запрос (filter/order/
+    select со списками внутри). Возвращаем список пар, чтобы `urlencode`
+    с `doseq=True` корректно отработал.
+    """
+    out: list[tuple[str, str]] = []
+    for key, value in params.items():
+        full_key = f"{_prefix}[{key}]" if _prefix else str(key)
+        if isinstance(value, dict):
+            out.extend(_flatten_params(value, full_key))
+        elif isinstance(value, list | tuple):
+            for idx, item in enumerate(value):
+                item_key = f"{full_key}[{idx}]"
+                if isinstance(item, dict):
+                    out.extend(_flatten_params(item, item_key))
+                else:
+                    out.append((item_key, "" if item is None else str(item)))
+        else:
+            out.append((full_key, "" if value is None else str(value)))
+    return out
+
+
 class BitrixClient:
     """
     Лёгкий клиент над одной `Integration`.
@@ -185,7 +213,7 @@ class BitrixClient:
     async def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         url = self._build_url(method)
         await _PortalThrottle.acquire(self._throttle_key)
-        body = urlencode(params, doseq=True)
+        body = urlencode(_flatten_params(params), doseq=True)
         resp = await self._client.post(
             url,
             content=body,
