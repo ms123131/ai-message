@@ -136,8 +136,14 @@ services:
         # (роуты уже включают префикс `/api/v1/...`), поэтому base — пустая строка.
         VITE_API_URL: ${VITE_API_URL-}
     restart: unless-stopped
+    # Ждём, пока api пройдёт healthcheck — иначе при первом старте nginx
+    # резолвит несуществующий апстрим, и пока DNS-TTL не истечёт, страница
+    # отдаёт Bad Gateway. С resolver в nginx.conf nginx перерезолвит
+    # автоматически, но healthy-зависимость снижает шанс уловить миг
+    # cold-start даже при первом заходе пользователя.
     depends_on:
-      - api
+      api:
+        condition: service_healthy
     ports:
       - "${WEB_PORT:-8080}:80"
 
