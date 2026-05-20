@@ -30,7 +30,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import Select, and_, case, desc, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -49,6 +49,7 @@ from app.db.models import (
     PortalLine,
     PortalUser,
     SenderType,
+    Sentiment,
 )
 from app.db.models import User as UserModel
 
@@ -1347,6 +1348,100 @@ async def sla_breaches_csv(
             "ID диалога",
         ],
         rows,
+    )
+
+
+# ---------------------------------------------------------------------------
+# /sentiment — распределение тональности клиентских сообщений
+# ---------------------------------------------------------------------------
+
+
+class SentimentBucket(BaseModel):
+    sentiment: Sentiment
+    count: int
+    share: float = Field(description="Доля от общего числа клиентских сообщений [0..1]")
+
+
+class SentimentResponse(BaseModel):
+    period_days: int
+    total_messages: int = Field(description="Всего клиентских сообщений за период")
+    analyzed_messages: int = Field(description="Сколько из них прошли sentiment-анализ")
+    pending_messages: int = Field(description="Ожидают анализа (sentiment IS NULL)")
+    buckets: list[SentimentBucket]
+    avg_score: float | None = Field(
+        default=None,
+        description="Средняя тональность клиентских диалогов за период, [-1..1]",
+    )
+
+
+@router.get("/sentiment", response_model=SentimentResponse)
+async def sentiment_breakdown(
+    days: int = Query(30, ge=1, le=365),
+    filters: _Filters = Depends(_filters_dep),
+    session: AsyncSession = Depends(get_session),
+) -> SentimentResponse:
+    """Распределение тональности клиентских сообщений за период.
+
+    Учитываем только sender_type=client: нас интересует настроение клиента,
+    а не как отвечает менеджер. avg_score — среднее по Conversation.sentiment_score
+    диалогов с хотя бы одним проанализированным клиентским сообщением.
+    """
+    range_from, _ = _window(days)
+
+    base_filters = [
+        *filters.conv_filters,
+        Message.sent_at >= range_from,
+        Message.sender_type == SenderType.client,
+    ]
+
+    total = (
+        await session.execute(
+            select(func.count(Message.id))
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*base_filters)
+        )
+    ).scalar() or 0
+
+    rows = (
+        await session.execute(
+            select(Message.sentiment, func.count(Message.id))
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*base_filters, Message.sentiment.is_not(None))
+            .group_by(Message.sentiment)
+        )
+    ).all()
+
+    by_sentiment = {s: 0 for s in Sentiment}
+    for sentiment, cnt in rows:
+        by_sentiment[sentiment] = int(cnt or 0)
+    analyzed = sum(by_sentiment.values())
+
+    buckets = [
+        SentimentBucket(
+            sentiment=s,
+            count=by_sentiment[s],
+            share=(by_sentiment[s] / analyzed) if analyzed else 0.0,
+        )
+        for s in Sentiment
+    ]
+
+    avg = (
+        await session.execute(
+            select(func.avg(Conversation.sentiment_score)).where(
+                *filters.conv_filters,
+                Conversation.created_at >= range_from,
+                Conversation.sentiment_score.is_not(None),
+            )
+        )
+    ).scalar()
+
+    return SentimentResponse(
+        period_days=days,
+        total_messages=int(total),
+        analyzed_messages=analyzed,
+        pending_messages=int(total) - analyzed,
+        buckets=buckets,
+        avg_score=float(avg) if avg is not None else None,
     )
 
 

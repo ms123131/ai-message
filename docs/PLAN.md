@@ -181,11 +181,22 @@ SaaS-приложение для анализа коммуникационных
 - [x] Тесты с httpx.MockTransport — happy path, 5xx → unavailable,
   4xx → error, timeout, валидация конфига
 
-### 6.1 Sentiment analysis
-- [ ] Воркер-задача `analyze_sentiment_for_conversation(conv_id)` через
-  fast-провайдера. Колонки `Message.sentiment` (pos/neu/neg) +
-  `Conversation.sentiment_score` (агрегат)
-- [ ] Дашборд: KPI «средняя тональность», timeline, top-negative диалоги
+### 6.1 Sentiment analysis ✅ (MVP)
+- [x] Schema: `Message.{sentiment, sentiment_confidence, sentiment_at,
+  sentiment_model}`, `Conversation.sentiment_score`. Миграция 0005,
+  частичный индекс `ix_messages_sentiment_pending`
+- [x] `app/nlp/sentiment.py`: `classify(text)` через fast-LLM с однословным
+  промптом и терпимым парсером; `analyze_messages_batch(session, ids)`;
+  `recompute_conversation_sentiment_score(session, conv_id)`. Считаем
+  только клиентские сообщения (sender_type=client)
+- [x] arq-таска `analyze_sentiment_for_integration(integration_id, batch_size)`
+  под distributed-локом per-integration
+- [x] `POST /integrations/{id}/analyze-sentiment` — enqueue батча
+- [x] `GET /dashboard/sentiment` — распределение по тональностям + avg_score
+- [x] Тесты: парсер, классификатор (stub + null), пересчёт score,
+  endpoint, enqueue в arq
+- [ ] TODO: автоматический trigger по cron (сейчас только ручной)
+- [ ] TODO: дашборд UI — KPI + chart по тональностям
 
 ### 6.2 Тэги / темы (быстрые)
 - [ ] LLM-классификация сообщения в 1-3 темы из словаря портала
