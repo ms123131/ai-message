@@ -20,10 +20,10 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -35,7 +35,11 @@ from app.db.models import (
     Integration,
     PortalStage,
 )
-from app.integrations.bitrix24.client import BitrixAPIError, BitrixClient
+from app.integrations.bitrix24.client import (
+    BATCH_LIMIT,
+    BitrixAPIError,
+    BitrixClient,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -441,3 +445,205 @@ async def enrich_entities(
                     ent.title = row.get("TITLE") or ent.title
 
         await session.flush()
+
+
+# Какой CRM_ENTITY_TYPE передавать в imopenlines.crm.chat.get для нашего kind.
+_CHAT_GET_ENTITY_TYPE = {
+    CrmEntityKind.deal: "deal",
+    CrmEntityKind.lead: "lead",
+}
+
+
+async def _list_entity_ids(
+    client: BitrixClient,
+    *,
+    method: str,
+    days: int,
+    max_entities: int,
+) -> list[str]:
+    """Постранично выгребает ID свежих сущностей одного типа.
+
+    Bitrix24 отдаёт до 50 за вызов + поле `next` для пагинации. Останавливаемся
+    на `max_entities` (защита от первого подключения с тысячами сделок).
+    """
+    cutoff = (datetime.now(UTC) - timedelta(days=days)).strftime("%Y-%m-%d")
+    ids: list[str] = []
+    start = 0
+    while True:
+        try:
+            page = await client.call(
+                method,
+                {
+                    "filter": {">=DATE_CREATE": cutoff},
+                    "select": ["ID"],
+                    "order": {"ID": "DESC"},
+                    "start": start,
+                },
+            )
+        except BitrixAPIError as exc:
+            logger.warning("%s failed at start=%s: %s", method, start, exc)
+            break
+        # При запросе через `client.call` мы получаем поле `result` ответа,
+        # но pagination `next` лежит в корне ответа. Bitrix отдаёт массив
+        # объектов в result; чтобы понять, есть ли следующая страница,
+        # смотрим на длину: меньше 50 — это последняя.
+        if not isinstance(page, list):
+            break
+        for row in page:
+            if not isinstance(row, dict):
+                continue
+            ent_id = row.get("ID") or row.get("id")
+            if ent_id:
+                ids.append(str(ent_id))
+                if max_entities and len(ids) >= max_entities:
+                    return ids
+        if len(page) < 50:
+            break
+        start += 50
+    return ids
+
+
+async def link_chats_for_integration(
+    client: BitrixClient,
+    session: AsyncSession,
+    integration: Integration,
+    *,
+    days: int,
+    max_entities: int,
+) -> dict[str, int]:
+    """Строит обратный CRM-индекс: ищет в Bitrix24 свежие сделки/лиды и для
+    каждой подтягивает связанные чаты, создавая `ConversationCrmLink`.
+
+    Стратегия: для каждого kind (deal, lead) получаем список ID за окно дней,
+    через batch (до 50 команд за вызов) пакуем `imopenlines.crm.chat.get`,
+    разбираем ответы, фильтруем по тем `CHAT_ID`, что уже есть в нашей БД как
+    `Conversation.external_id`. Это снимает проблему: Bitrix не возвращает CRM
+    в `imopenlines.session.history.get`, и без обратного индекса ConversationCrmLink
+    остаётся пустой.
+
+    Возвращает счётчики: {entities_scanned, links_created}.
+    """
+    # Известные внешние ID диалогов: чужие CHAT_ID игнорируем, чтобы не
+    # создавать CrmEntity без соответствующего Conversation.
+    known_chats = set(
+        (
+            await session.execute(
+                select(Conversation.external_id).where(
+                    Conversation.integration_id == integration.id,
+                    Conversation.external_id.is_not(None),
+                )
+            )
+        ).scalars()
+    )
+    if not known_chats:
+        return {"entities_scanned": 0, "links_created": 0}
+
+    scanned = 0
+    links_before = (
+        await session.execute(
+            select(func.count(ConversationCrmLink.conversation_id))
+            .join(
+                Conversation,
+                Conversation.id == ConversationCrmLink.conversation_id,
+            )
+            .where(Conversation.integration_id == integration.id)
+        )
+    ).scalar_one()
+
+    refs_to_enrich: list[CrmEntity] = []
+    kinds_seen: set[CrmEntityKind] = set()
+
+    for kind, entity_type in _CHAT_GET_ENTITY_TYPE.items():
+        list_method = (
+            "crm.deal.list" if kind == CrmEntityKind.deal else "crm.lead.list"
+        )
+        ids = await _list_entity_ids(
+            client,
+            method=list_method,
+            days=days,
+            max_entities=max_entities,
+        )
+        scanned += len(ids)
+        if not ids:
+            continue
+
+        # Пакуем `imopenlines.crm.chat.get` батчами по 50.
+        for chunk_start in range(0, len(ids), BATCH_LIMIT):
+            chunk = ids[chunk_start : chunk_start + BATCH_LIMIT]
+            commands = {
+                f"e{idx}": (
+                    "imopenlines.crm.chat.get?"
+                    f"CRM_ENTITY_TYPE={entity_type}&CRM_ENTITY={ent_id}&ACTIVE_ONLY=N"
+                )
+                for idx, ent_id in enumerate(chunk)
+            }
+            try:
+                results = await client.batch(commands)
+            except BitrixAPIError as exc:
+                logger.warning(
+                    "imopenlines.crm.chat.get batch failed: %s", exc
+                )
+                continue
+
+            for idx, ent_id in enumerate(chunk):
+                chats = results.get(f"e{idx}")
+                if not isinstance(chats, list):
+                    continue
+                for chat in chats:
+                    if not isinstance(chat, dict):
+                        continue
+                    chat_id = chat.get("CHAT_ID") or chat.get("chat_id")
+                    if not chat_id:
+                        continue
+                    chat_id_str = str(chat_id)
+                    if chat_id_str not in known_chats:
+                        # Сделка привязана к чату, который мы ещё не импортировали.
+                        # Пропускаем — он подтянется поллером, и тогда мы заново
+                        # пройдём индекс.
+                        continue
+                    conv = (
+                        await session.execute(
+                            select(Conversation).where(
+                                Conversation.integration_id == integration.id,
+                                Conversation.external_id == chat_id_str,
+                            )
+                        )
+                    ).scalar_one_or_none()
+                    if conv is None:
+                        continue
+                    ent = await upsert_link(
+                        session, integration, conv, kind=kind, external_id=ent_id
+                    )
+                    refs_to_enrich.append(ent)
+                    kinds_seen.add(kind)
+            await session.flush()
+
+    # Один проход дотягивания деталей сразу после индекса.
+    if refs_to_enrich:
+        try:
+            stage_index = await sync_stages_cache(
+                client, session, integration, kinds_seen
+            )
+            await enrich_entities(
+                client, session, integration, refs_to_enrich, stage_index
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("CRM enrichment after linking failed: %s", exc)
+
+    await session.commit()
+
+    links_after = (
+        await session.execute(
+            select(func.count(ConversationCrmLink.conversation_id))
+            .join(
+                Conversation,
+                Conversation.id == ConversationCrmLink.conversation_id,
+            )
+            .where(Conversation.integration_id == integration.id)
+        )
+    ).scalar_one()
+
+    return {
+        "entities_scanned": scanned,
+        "links_created": int(links_after - links_before),
+    }

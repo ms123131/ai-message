@@ -22,7 +22,10 @@ from app.config import get_settings
 from app.db.models import Integration, IntegrationMode, IntegrationStatus
 from app.db.session import AsyncSessionLocal
 from app.integrations.bitrix24.client import BitrixClient
-from app.integrations.bitrix24.crm import refresh_known_crm_entities
+from app.integrations.bitrix24.crm import (
+    link_chats_for_integration,
+    refresh_known_crm_entities,
+)
 from app.workers.locks import portal_lock
 
 logger = logging.getLogger(__name__)
@@ -83,16 +86,33 @@ async def sync_crm_for_integration(
                     updated = await refresh_known_crm_entities(
                         client, session, integration
                     )
+                    # Обратный индекс: ищем свежие сделки/лиды и связываем их
+                    # с диалогами. Bitrix24 не отдаёт CRM в imopenlines.session
+                    # .history.get, поэтому это единственный путь наполнить
+                    # ConversationCrmLink автоматически.
+                    link_stats = await link_chats_for_integration(
+                        client,
+                        session,
+                        integration,
+                        days=settings.bitrix24_crm_link_window_days,
+                        max_entities=settings.bitrix24_crm_link_max_entities,
+                    )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "crm sync: integration=%s failed: %s", integration_id, exc
                 )
                 return {"updated": 0, "skipped": 1}
 
-        if updated:
+        if updated or link_stats["links_created"]:
             logger.info(
-                "crm sync: integration=%s refreshed=%d entities",
+                "crm sync: integration=%s refreshed=%d scanned=%d links_created=%d",
                 integration_id,
                 updated,
+                link_stats["entities_scanned"],
+                link_stats["links_created"],
             )
-        return {"updated": updated, "skipped": 0}
+        return {
+            "updated": updated,
+            "links_created": link_stats["links_created"],
+            "skipped": 0,
+        }
