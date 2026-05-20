@@ -252,7 +252,9 @@ SaaS-приложение для анализа коммуникационных
 - [x] ~~`Base.metadata.create_all` в `lifespan` — заменить на Alembic~~ (PR #1)
 - [x] ~~`client_secret` хранится в БД как plain text — зашифровать (Fernet)~~ (PR #2)
 - [ ] Bundle размер web > 500 KB — добавить code-splitting (`manualChunks`)
-- [ ] Pydantic warning: миграция `class Config` → `ConfigDict` сделана только в одном месте, проверить остальные
+- [x] ~~Pydantic warning: миграция `class Config` → `ConfigDict`~~ — проверено,
+  старого синтаксиса в коде нет; все BaseModel либо без конфига, либо на
+  `ConfigDict(from_attributes=True)`, Settings на `SettingsConfigDict`
 - [ ] CI на feature-ветках не запускается (только PR/push в main/dev) — норма для GitHub Flow, но если хотите CI на любой push — добавить `branches: ['**']`
 
 ---
