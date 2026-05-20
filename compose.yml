@@ -57,6 +57,7 @@ services:
     environment:
       APP_ENV: ${APP_ENV:-production}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aimessage}:${POSTGRES_PASSWORD:-aimessage}@postgres:5432/${POSTGRES_DB:-aimessage}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY-}
 
   api:
     build:
@@ -76,6 +77,7 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:8080}
       JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY-}
       WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL-}
       BITRIX24_APP_CLIENT_ID: ${BITRIX24_APP_CLIENT_ID-}
       BITRIX24_APP_CLIENT_SECRET: ${BITRIX24_APP_CLIENT_SECRET-}
@@ -103,6 +105,7 @@ services:
       APP_ENV: ${APP_ENV:-production}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-aimessage}:${POSTGRES_PASSWORD:-aimessage}@postgres:5432/${POSTGRES_DB:-aimessage}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY-}
       BITRIX24_APP_CLIENT_ID: ${BITRIX24_APP_CLIENT_ID-}
       BITRIX24_APP_CLIENT_SECRET: ${BITRIX24_APP_CLIENT_SECRET-}
       BITRIX24_POLL_INTERVAL_SEC: ${BITRIX24_POLL_INTERVAL_SEC:-30}

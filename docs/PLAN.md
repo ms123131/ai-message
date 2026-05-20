@@ -124,13 +124,16 @@ SaaS-приложение для анализа коммуникационных
   `Base.metadata.create_all` через `conftest.py`. Подводные камни на будущее:
   `postgresql.ENUM(create_type=False)` обязателен (sa.Enum игнорирует флаг),
   `.gitattributes` форсирует LF для `*.sh`/`Dockerfile` (Windows-чекаут).
-- [ ] **PR #2 — Fernet** для шифрования `client_secret`, `access_token`,
-  `refresh_token` в `integrations`. План: `cryptography>=43`,
-  `app/security/crypto.py` с `MultiFernet([current, previous])`, TypeDecorator
-  `EncryptedString` (имена колонок не меняются), `ENCRYPTION_KEY` в `.env`
-  обязателен для `app_env=production`. Alembic data-migration шифрует
-  существующие plain-значения. Двухэтапный rollout (fallback на plain
-  при чтении) пока не нужен — данных нет.
+- [x] **PR #2 — Fernet** для шифрования `client_secret`, `access_token`,
+  `refresh_token` в `integrations`. Реализовано: `cryptography>=43`,
+  `app/security/crypto.py` с `MultiFernet` и поддержкой ротации
+  (`ENCRYPTION_KEY=new,old`), `app/security/types.py::EncryptedString`
+  TypeDecorator поверх `Text`, alembic-миграция `0003_encrypt_integration_secrets`
+  (идемпотентная, downgrade расшифровывает обратно). В `app_env=production`
+  отсутствие `ENCRYPTION_KEY` — фатальная ошибка; в dev/test генерируется
+  эпhemerал-ключ. Чтение терпимо к plain (`try_decrypt_str`) на случай
+  отката миграции. Тесты: `tests/test_crypto.py` — roundtrip, ротация,
+  валидация ключа, raw-SQL подтверждение ciphertext в БД.
 - [x] **PR #3 — Redis + ARQ**. Воркер фоновых задач вынесен из API-процесса.
   Реализовано: `redis:7-alpine` с AOF в compose, отдельный `worker`-контейнер
   с тем же образом (entrypoint `run-worker` → `arq app.workers.settings.WorkerSettings`),
@@ -247,7 +250,7 @@ SaaS-приложение для анализа коммуникационных
 ## Известные технические долги
 
 - [x] ~~`Base.metadata.create_all` в `lifespan` — заменить на Alembic~~ (PR #1)
-- [ ] `client_secret` хранится в БД как plain text — зашифровать (Fernet) — см. PR #2 в фазе 5
+- [x] ~~`client_secret` хранится в БД как plain text — зашифровать (Fernet)~~ (PR #2)
 - [ ] Bundle размер web > 500 KB — добавить code-splitting (`manualChunks`)
 - [ ] Pydantic warning: миграция `class Config` → `ConfigDict` сделана только в одном месте, проверить остальные
 - [ ] CI на feature-ветках не запускается (только PR/push в main/dev) — норма для GitHub Flow, но если хотите CI на любой push — добавить `branches: ['**']`

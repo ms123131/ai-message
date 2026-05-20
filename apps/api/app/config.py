@@ -18,6 +18,13 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me-in-production"
     jwt_expires_min: int = 60
 
+    # Fernet-ключ для шифрования секретов в БД (client_secret, access/refresh
+    # токены интеграций). Один ключ или несколько через запятую: первый —
+    # активный (им шифруем), остальные — для расшифровки старых записей при
+    # ротации (см. MultiFernet). В production обязателен, в dev/test при
+    # отсутствии генерируется эпhemerал-ключ.
+    encryption_key: str | None = Field(default=None)
+
     bitrix24_oauth_token_url: str = "https://oauth.bitrix24.tech/oauth/token/"
     # Глобальные client_id/secret НАШЕГО Bitrix24-приложения. Хранятся в .env,
     # один на всех клиентов. Клиент устанавливает приложение на свой портал —
