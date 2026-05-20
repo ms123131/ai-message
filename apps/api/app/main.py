@@ -10,6 +10,7 @@ from app import __version__
 from app.api.v1 import api_router
 from app.config import get_settings
 from app.db.session import engine
+from app.integrations.llm import reset_cache as reset_llm_cache
 from app.security.ratelimit import limiter, rate_limit_exceeded_handler
 from app.workers.redis_pool import close_pool
 
@@ -28,6 +29,7 @@ async def lifespan(_: FastAPI):
         yield
     finally:
         await close_pool()
+        await reset_llm_cache()
         await engine.dispose()
 
 

@@ -51,6 +51,26 @@ class Settings(BaseSettings):
     # CrmEntity интеграции. 0 — отключить.
     bitrix24_crm_sync_interval_sec: int = 300
 
+    # LLM-провайдеры. Делим на «fast» (массовые дешёвые задачи: sentiment,
+    # тэгирование) и «smart» (нюансы: резюме диалогов, weekly insights).
+    # Каждый описывается тройкой <provider, model, api_key> + опциональный
+    # base_url для openai-compat endpoints (Groq, OpenRouter, DeepSeek, ...).
+    #
+    # provider ∈ {null, claude, openai, groq, openrouter, deepseek, together, openai_compat}
+    # Для openai_compat обязателен LLM_*_BASE_URL.
+    #
+    # Дефолты — null/null: без ключей ничего не зовётся, фичи возвращают
+    # заглушки. Это безопасно: забыл выставить ключ в проде — не упадёт.
+    llm_fast_provider: str = "null"
+    llm_fast_model: str | None = Field(default=None)
+    llm_fast_api_key: str | None = Field(default=None)
+    llm_fast_base_url: str | None = Field(default=None)
+
+    llm_smart_provider: str = "null"
+    llm_smart_model: str | None = Field(default=None)
+    llm_smart_api_key: str | None = Field(default=None)
+    llm_smart_base_url: str | None = Field(default=None)
+
     # Redis (брокер задач для arq-воркера). По умолчанию указывает на
     # compose-сервис `redis`. Для локального dev без docker — `redis://localhost:6379/0`.
     # В тестах подменяется на fakeredis через monkeypatch фабрики пула.

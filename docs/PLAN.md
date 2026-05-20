@@ -163,14 +163,57 @@ SaaS-приложение для анализа коммуникационных
 
 ---
 
-## Фаза 6 — Анализ (NLP)
+## Фаза 6 — Анализ (NLP / AI)
 
-- [ ] Sentiment analysis (`blanchefort/rubert-base-cased-sentiment-rusentiment`)
-- [ ] Извлечение сущностей (Natasha для русского)
-- [ ] Topic modeling (BERTopic)
-- [ ] Метрики разговоров: First Response Time, Resolution Time, длина
-- [ ] Эмбеддинги + pgvector для семантического поиска
-- [ ] LLM-суммаризация длинных диалогов (через Claude API)
+Архитектурно делим LLM-задачи на **fast** (массовые: sentiment, тэги) и
+**smart** (нюансы: резюме, weekly insights). Каждый назначение —
+отдельный провайдер из конфига, можно одинаковый.
+
+### 6.0 Базовая абстракция LLM-провайдеров ✅
+- [x] `app/integrations/llm/{base,claude,openai_compat,null,factory}.py`
+- [x] Единый интерфейс `LLMProvider.chat(messages) -> LLMResponse`,
+  ошибки маппятся в `LLMError` / `LLMUnavailableError` / `LLMTimeoutError`
+- [x] OpenAI-compat провайдер один на всех (Groq, OpenAI, OpenRouter,
+  DeepSeek, Together, VseGPT, локальные vLLM) — разница только в base_url
+- [x] Anthropic Claude — отдельная реализация через REST (без SDK)
+- [x] Null-провайдер — безопасный дефолт, возвращает заглушки без сети
+- [x] Конфиг: `LLM_FAST_*` и `LLM_SMART_*` (provider/model/api_key/base_url)
+- [x] Тесты с httpx.MockTransport — happy path, 5xx → unavailable,
+  4xx → error, timeout, валидация конфига
+
+### 6.1 Sentiment analysis
+- [ ] Воркер-задача `analyze_sentiment_for_conversation(conv_id)` через
+  fast-провайдера. Колонки `Message.sentiment` (pos/neu/neg) +
+  `Conversation.sentiment_score` (агрегат)
+- [ ] Дашборд: KPI «средняя тональность», timeline, top-negative диалоги
+
+### 6.2 Тэги / темы (быстрые)
+- [ ] LLM-классификация сообщения в 1-3 темы из словаря портала
+  (типовые: «жалоба», «оплата», «доставка», ...). Динамический словарь
+  собираем из топ-N кластеров
+
+### 6.3 LLM-резюме диалогов
+- [ ] smart-провайдер, дешёвая модель (Haiku/Llama). Кнопка «резюме» в Inbox
+- [ ] Запись `Conversation.summary` + индикатор устаревания
+
+### 6.4 Topic modeling (BERTopic)
+- [ ] Локально на CPU поверх эмбеддингов (см. 6.5). Раз в сутки
+  пересчитывает темы и сохраняет в `topic_clusters`
+
+### 6.5 Эмбеддинги + pgvector
+- [ ] `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`,
+  CPU. Каждое сообщение → 384-dim вектор в `messages.embedding`
+- [ ] pgvector + ivfflat индекс, эндпоинт «семантический поиск похожих»
+
+### 6.6 Извлечение сущностей
+- [ ] Natasha для русского (имена, города, организации) + регулярки
+  для телефонов/email/трек-номеров. Сохраняем в `Message.entities`
+  как JSON
+
+### 6.7 Weekly insights и аномалии
+- [ ] smart-провайдер раз в неделю собирает overview + outlier-диалоги
+  → presigned-доклад в кабинете
+- [ ] Аномалии: всплески объёма, резкие изменения SLA, пики негатива
 
 ---
 
