@@ -3,7 +3,7 @@
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -29,6 +29,8 @@ from app.schemas.integration import (
     Bitrix24ConnectRequest,
     IntegrationOut,
 )
+from app.security.audit import write_audit
+from app.security.ratelimit import limiter
 
 
 class ImportJobOut(BaseModel):
@@ -102,10 +104,21 @@ async def get_integration(
 @router.delete("/{integration_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_integration(
     integration_id: str,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     user: UserModel = Depends(get_current_user),
 ) -> None:
     obj = await _get_owned(session, integration_id, user)
+    await write_audit(
+        session,
+        action="integration.delete",
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        target_type="integration",
+        target_id=obj.id,
+        request=request,
+        meta={"domain": obj.domain, "kind": obj.kind.value if obj.kind else None},
+    )
     await session.delete(obj)
     await session.commit()
 
@@ -133,6 +146,7 @@ async def bitrix24_config() -> dict[str, Any]:
 )
 async def connect_bitrix24(
     body: Bitrix24ConnectRequest,
+    request: Request,
     session: AsyncSession = Depends(get_session),
     user: UserModel = Depends(get_current_user),
 ) -> Integration:
@@ -233,6 +247,16 @@ async def connect_bitrix24(
         else:
             integration.status = IntegrationStatus.pending
 
+    await write_audit(
+        session,
+        action="integration.connect",
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        target_type="integration",
+        target_id=integration.id,
+        request=request,
+        meta={"domain": domain, "is_local_app": is_local_app},
+    )
     await session.commit()
     await session.refresh(integration)
     return integration
@@ -291,7 +315,9 @@ async def unsubscribe_events(
     response_model=ImportJobOut,
     status_code=status.HTTP_202_ACCEPTED,
 )
+@limiter.limit("6/minute")
 async def trigger_import(
+    request: Request,  # noqa: ARG001 — нужен slowapi для key_func
     integration_id: str,
     days: int = Query(30, ge=1, le=180),
     session: AsyncSession = Depends(get_session),

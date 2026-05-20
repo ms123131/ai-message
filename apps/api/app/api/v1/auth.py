@@ -23,6 +23,8 @@ from app.auth.security import (
 )
 from app.db import get_session
 from app.db.models import Tenant, User, UserRole
+from app.security.audit import write_audit
+from app.security.ratelimit import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -81,7 +83,9 @@ def _clear_refresh_cookie(response: Response) -> None:
 
 
 @router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/minute")
 async def register(
+    request: Request,  # noqa: ARG001 — нужен slowapi для key_func
     body: RegisterIn,
     response: Response,
     session: AsyncSession = Depends(get_session),
@@ -127,7 +131,9 @@ async def register(
 
 
 @router.post("/login", response_model=AuthResponse)
+@limiter.limit("10/minute")
 async def login(
+    request: Request,  # noqa: ARG001 — нужен slowapi для key_func
     body: LoginIn,
     response: Response,
     session: AsyncSession = Depends(get_session),
@@ -136,6 +142,15 @@ async def login(
     user = result.scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
         # Не раскрываем, что именно не так — стандартная мера.
+        await write_audit(
+            session,
+            action="auth.login_failed",
+            tenant_id=user.tenant_id if user else None,
+            user_id=user.id if user else None,
+            request=request,
+            meta={"email": body.email.lower()},
+        )
+        await session.commit()
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     tenant = await session.get(Tenant, user.tenant_id)
@@ -150,6 +165,7 @@ async def login(
 
 
 @router.post("/refresh", response_model=AuthResponse)
+@limiter.limit("30/minute")
 async def refresh(
     request: Request,
     response: Response,

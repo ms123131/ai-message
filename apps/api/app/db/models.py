@@ -610,6 +610,44 @@ class ImportJob(Base):
     )
 
 
+class AuditLog(Base):
+    """Запись audit-журнала: кто/когда совершил чувствительное действие.
+
+    Цель — иметь возможность ретроспективно ответить на вопросы вида
+    «кто удалил интеграцию», «кто обновил токены», «кто читал список
+    диалогов клиента». Пишем точечно: модифицирующие операции и
+    подозрительные чтения. Хранение — append-only.
+    """
+
+    __tablename__ = "audit_logs"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("tenants.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    user_id: Mapped[str | None] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    action: Mapped[str] = mapped_column(String(64), nullable=False)
+    target_type: Mapped[str | None] = mapped_column(String(64))
+    target_id: Mapped[str | None] = mapped_column(String(64))
+    ip: Mapped[str | None] = mapped_column(String(64))
+    meta: Mapped[dict[str, Any] | None] = mapped_column(SAJSON)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_audit_logs_tenant_created", "tenant_id", "created_at"),
+        Index("ix_audit_logs_action_created", "action", "created_at"),
+    )
+
+
 # Полнотекстовый поиск по сообщениям (колонка `tsv` + GIN-индекс) создаётся
 # Alembic-миграцией для PostgreSQL. Тесты на SQLite используют
 # `Base.metadata.create_all` напрямую и обходятся без FTS.

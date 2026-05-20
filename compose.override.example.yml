@@ -1,0 +1,15 @@
+# Пример dev-overrides. Скопируйте в compose.override.yml — Docker Compose
+# подхватит файл автоматически. В git коммитим только этот пример.
+#
+# Назначение: для локальной отладки публикуем порты postgres и api на хост.
+# В production compose.override.yml отсутствует — порты остаются внутри
+# Docker-сети и недоступны снаружи.
+
+services:
+  postgres:
+    ports:
+      - "5432:5432"
+
+  api:
+    ports:
+      - "8000:8000"  # Swagger UI: http://localhost:8000/docs

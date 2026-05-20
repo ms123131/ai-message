@@ -27,6 +27,19 @@ class _FakeArqPool:
 
 
 @pytest.fixture(autouse=True)
+def _reset_rate_limiter():
+    """Сбрасываем in-memory лимиты между тестами, чтобы они не пересекались.
+
+    Тесты с проверкой 429 должны явно прокручивать лимит в одном тесте.
+    """
+    from app.security.ratelimit import limiter
+
+    limiter.reset()
+    yield
+    limiter.reset()
+
+
+@pytest.fixture(autouse=True)
 def _stub_arq_pool(monkeypatch):
     """Авто-подмена: все тесты получают fake arq-пул без обращения к Redis."""
     pool = _FakeArqPool()
