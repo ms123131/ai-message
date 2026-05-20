@@ -36,3 +36,6 @@ __pycache__/
 
 # OS
 Thumbs.db
+
+# Local dev overrides for docker compose
+compose.override.yml

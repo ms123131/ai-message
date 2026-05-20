@@ -147,10 +147,18 @@ SaaS-приложение для анализа коммуникационных
 
 ### Прочее
 
-- [ ] Rate limiting (slowapi) per-tenant
-- [ ] Audit log (кто/когда менял интеграции, читал диалоги)
-- [ ] CSP-заголовки в nginx
-- [ ] Закрыть порты `5432` и `8000` в production `compose.yml`
+- [x] Rate limiting (slowapi) per-tenant — `app/security/ratelimit.py`,
+  ключ = `tenant:<tid>` для JWT-запросов или `ip:<addr>` для анонимов.
+  Лимиты: register 5/min, login 10/min, refresh 30/min, import 6/min.
+  В тестах лимитер сбрасывается между запусками через autouse-фикстуру.
+- [x] Audit log — `audit_logs` (миграция 0004), `app/security/audit.py`.
+  Пишем: integration.delete/connect, auth.login_failed. Запись в той же
+  транзакции, что и основное действие.
+- [x] CSP-заголовки в nginx — строгий `default-src 'self'` для SPA,
+  отдельный `frame-ancestors *.bitrix24.*` для `/install/`, плюс
+  `Permissions-Policy`.
+- [x] Закрыть порты `5432` и `8000` в production `compose.yml` — публикация
+  убрана; для dev-отладки `compose.override.example.yml` (в .gitignore).
 - [ ] Pen-test перед коммерческим запуском
 
 ---

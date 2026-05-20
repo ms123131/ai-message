@@ -3,11 +3,14 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app import __version__
 from app.api.v1 import api_router
 from app.config import get_settings
 from app.db.session import engine
+from app.security.ratelimit import limiter, rate_limit_exceeded_handler
 from app.workers.redis_pool import close_pool
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -36,6 +39,9 @@ def create_app() -> FastAPI:
         description="Chat Analysis platform — REST API",
         lifespan=lifespan,
     )
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origins_list,

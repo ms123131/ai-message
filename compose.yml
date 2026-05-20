@@ -25,9 +25,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
-    # Открываем порт только для локальной отладки. В проде закомментировать.
-    ports:
-      - "5432:5432"
+    # Порт 5432 НЕ публикуется в production. Для локальной отладки добавьте
+    # его через compose.override.yml (см. compose.override.example.yml).
 
   redis:
     image: redis:7-alpine
@@ -81,9 +80,9 @@ services:
       WEBHOOK_BASE_URL: ${WEBHOOK_BASE_URL-}
       BITRIX24_APP_CLIENT_ID: ${BITRIX24_APP_CLIENT_ID-}
       BITRIX24_APP_CLIENT_SECRET: ${BITRIX24_APP_CLIENT_SECRET-}
-    # Прямой доступ к API — на время разработки. В проде убрать.
-    ports:
-      - "8000:8000"
+    # Порт 8000 НЕ публикуется в production — фронт ходит через nginx-прокси.
+    # Для локальной отладки (Swagger напрямую) добавьте публикацию через
+    # compose.override.yml.
 
   worker:
     # Воркер фоновых задач (arq). Тот же образ, что и api, но другой
