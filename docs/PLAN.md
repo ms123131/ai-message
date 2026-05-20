@@ -392,6 +392,57 @@ SaaS-приложение для анализа коммуникационных
 - [ ] TODO: вынести client_id/secret в таблицу Bitrix24App при появлении
   нескольких приложений (.ru/.com или разные тарифы)
 
+## Фаза 3.4 — Надёжность интеграции с Bitrix24 ✅ (2026-05-20)
+
+Боевая отладка по живому порталу выявила цепочку дефектов, из-за которых
+дашборд показывал «Со сделкой 0» при наличии сделок в B24. Все исправлены
+и запушены в `dev`.
+
+- [x] **Bitrix REST: сериализация вложенных dict/list в PHP-стиль.** Главный
+  скрытый баг: `urllib.parse.urlencode` сериализовал `{"filter": {...}}`
+  через `repr()` → Bitrix падал с `"Parameter 'order' must be array"`.
+  Ошибки проглатывались `try/except` в `enrich_entities`/`sync_stages_cache`,
+  поэтому проявлялись как «всё работает, но crm_entities пустые».
+  `_flatten_params` рекурсивно раскладывает в `filter[>=DATE_CREATE]=...`,
+  `filter[@ID][0]=1` (commit `ff5d14e`).
+- [x] **OAuth: статус интеграции при провале refresh.** `_refresh` делал
+  `flush` без `commit`; вызывающий код закрывал сессию по rollback →
+  status откатывался, UI/БД врали `connected` при мёртвом refresh-токене.
+  Теперь `commit` при `BitrixOAuthError` (commit `23335b2`).
+- [x] **Обратный CRM-индекс.** На части порталов B24 не отдаёт блок
+  `session` в `imopenlines.session.history.get` — наш парсер `session.crm`
+  никогда не находил привязок. Прямого «по chat_id → сделка» в API нет,
+  только обратный путь. Воркер `dispatch_crm_sync` теперь пробегает
+  `crm.deal.list`/`crm.lead.list` за окно (`BITRIX24_CRM_LINK_WINDOW_DAYS`,
+  default 30 дней), батчем по 50 дёргает `imopenlines.crm.chat.get` и
+  связывает найденные CHAT_ID с уже импортированными `Conversation`
+  (commit `d321d35`).
+- [x] **CRM-enrich на webhook.** `OnOpenLineMessageAdd` создавал
+  Conversation+Message без CRM-привязки; даже после починки поллера
+  свежие диалоги жили без сделок до следующего цикла поллера. Теперь
+  webhook ставит arq-задачу `enrich_conversation_from_chat`, которая
+  дотягивает session.history для одного chat_id, обновляет
+  operator/line/contact и создаёт CrmEntity+ConversationCrmLink
+  (commit `23335b2`).
+- [x] **Бэкфил ConversationCrmLink.** `POST /integrations/{id}/enrich-conversations`
+  и CLI `python -m app.cli crm-link` — разовый прогон по существующим
+  диалогам после первого подключения или починки.
+- [x] **CLI: `debug-history`.** Команда показывает, какие ключи Bitrix
+  возвращает в `imopenlines.session.history.get` и что вытаскивает
+  парсер. Полезна, когда «Со сделкой 0» — за минуту видно, дело в
+  отсутствии session-блока, в кривых полях, или в нашем коде.
+- [x] **Nginx: динамический resolver.** После `docker compose up --build api`
+  контейнер api получал новый IP, nginx кэшировал старый навсегда → web
+  отдавал Bad Gateway до собственного рестарта. Добавлен
+  `resolver 127.0.0.11 valid=10s` + `proxy_pass` через переменную; web
+  ждёт api `service_healthy` (commit `4e93159`).
+
+**Контекст**: см. транскрипт сессии 2026-05-20 — там показан полный
+follow-the-data путь от «funnel показывает 0» через invalid_grant,
+пустой `session.crm`, до `urlencode` ломающего весь CRM-сток.
+
+---
+
 ## Известные технические долги
 
 - [x] ~~`Base.metadata.create_all` в `lifespan` — заменить на Alembic~~ (PR #1)
