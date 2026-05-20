@@ -196,7 +196,82 @@ SaaS-приложение для анализа коммуникационных
 - [x] Тесты: парсер, классификатор (stub + null), пересчёт score,
   endpoint, enqueue в arq
 - [ ] TODO: автоматический trigger по cron (сейчас только ручной)
-- [ ] TODO: дашборд UI — KPI + chart по тональностям
+
+### 6.1.1 Sentiment UI — вывод в дашборде и Inbox
+
+Цель: показать клиенту, что AI-таб больше не заглушка. Используем уже
+существующий read-only endpoint `/dashboard/sentiment` и денормализованный
+`Conversation.sentiment_score`. Frontend-only, backend не трогаем (кроме
+расширения `ConversationListItem` одним полем).
+
+#### Backend (минимум)
+- [ ] `ConversationOut` → добавить `sentiment_score: float | None`,
+  чтобы Inbox мог рисовать бэйдж без отдельного запроса. Тип уже есть
+  в модели, нужно только в схему.
+- [ ] `GET /dashboard/sentiment` уже отдаёт `buckets[]` + `avg_score`
+  + `pending_messages` — этого хватит для donut и KPI.
+- [ ] (опционально) `GET /dashboard/top-negative-conversations?limit=10` —
+  список диалогов с наименьшим `sentiment_score` за период. Без него
+  можно обойтись фильтрацией существующего `/conversations` на фронте,
+  но отдельный endpoint чище.
+
+#### Inbox
+- [ ] Бэйдж-кружок в карточке диалога: зелёный (score > 0.2) / серый
+  (-0.2 ≤ score ≤ 0.2) / красный (score < -0.2). Серый/«нет данных» —
+  если `sentiment_score === null`.
+- [ ] Tooltip на бэйдже: «Тональность клиента: позитивная/нейтральная/
+  негативная, среднее N.NN из M сообщений».
+- [ ] Фильтр-чип «Только негатив» в `DashboardFilterBar` (передаёт
+  `sentiment=negative` на бэк — мелкое расширение `/conversations`).
+
+#### Overview-таб дашборда
+- [ ] Девятая KPI-карточка «Средняя тональность» рядом с FRT/AHT.
+  Значение из `avg_score`, формат — `+0.42` / `-0.18`, цвет — по знаку,
+  дельта к прошлому периоду через стандартный `/dashboard/overview` (туда
+  добавляется новое поле `sentiment_avg` + `sentiment_avg_prev`).
+- [ ] Если `pending_messages > 0` — мягкая подпись «N сообщений ещё
+  анализируется», без алярма.
+
+#### AI-таб дашборда
+- [ ] Заменить первую lock-карточку «sentiment скоро» на реальный блок:
+  - Donut-chart распределения позитив/нейтрал/негатив (Recharts PieChart,
+    палитра как у каналов)
+  - KPI-полоска: всего N клиентских сообщений, проанализировано M,
+    среднее по диалогам `avg_score`
+  - Список «Топ-10 негативных диалогов» с быстрым переходом в Inbox
+  - Кнопка «Запустить анализ свежих сообщений» → POST `/integrations/{id}/
+    analyze-sentiment`. Показывает toast «N сообщений отправлено в очередь».
+- [ ] Остальные 7 lock-карточек остаются как есть до фаз 6.2–6.7.
+
+#### Состояния и edge cases
+- [ ] Empty state, если ни одного сообщения не проанализировано:
+  «Подключите LLM-провайдера в настройках и нажмите Запустить анализ»
+  с прямой ссылкой на нужную страницу/документацию.
+- [ ] Если `LLM_FAST_PROVIDER=null` — на странице Settings показать
+  баннер «AI-фичи отключены: задайте `LLM_FAST_API_KEY`».
+- [ ] Loading skeleton, как в остальных табах.
+
+#### Тесты
+- [ ] Vitest: рендер бэйджа для positive/neutral/negative/null score.
+- [ ] Vitest: donut собирается из buckets без падения на нулевых счётчиках.
+- [ ] Vitest: кнопка «Запустить анализ» делает POST и показывает toast.
+
+#### Файлы (предположительно)
+- `apps/web/src/components/SentimentBadge.tsx` — переиспользуемый кружок
+- `apps/web/src/pages/InboxPage.tsx` — врендерить бэйдж + фильтр
+- `apps/web/src/components/DashboardFilterBar.tsx` — фильтр-чип
+- `apps/web/src/pages/dashboard/OverviewTab.tsx` — KPI-карточка
+- `apps/web/src/pages/dashboard/AITab.tsx` — donut + список + кнопка
+- `apps/web/src/lib/api.ts` — типы `SentimentResponse`,
+  `TopNegativeConversation`, метод `triggerSentiment(integrationId)`
+
+#### Что НЕ делаем в этой итерации
+- Sentiment-таймлайн (требует нового endpoint с группировкой по дням —
+  уйдёт в 6.7 «weekly insights»)
+- Sentiment по операторам (нужен JOIN на `assigned_user_id`, уйдёт
+  туда же)
+- Per-message раскраска в просмотре диалога — нужна только если
+  жалуется UX-тестирование, пока не доказано необходимым
 
 ### 6.2 Тэги / темы (быстрые)
 - [ ] LLM-классификация сообщения в 1-3 темы из словаря портала
