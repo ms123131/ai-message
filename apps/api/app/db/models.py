@@ -165,6 +165,20 @@ class SenderType(str, Enum):
     system = "system"
 
 
+class Sentiment(str, Enum):
+    """Тональность сообщения (фаза 6.1).
+
+    Сознательно держим только 3 класса: «positive/neutral/negative». Шкалу
+    из 5+ значений LLM выдают шумно, а на дашборде всё равно сводится
+    к доле негатива. confidence хранится отдельным float, чтобы можно было
+    отфильтровать неуверенные предсказания.
+    """
+
+    positive = "positive"
+    neutral = "neutral"
+    negative = "negative"
+
+
 class Conversation(Base):
     """Один диалог (Open Channels session, email-цепочка и т.п.)."""
 
@@ -207,6 +221,11 @@ class Conversation(Base):
     # First Response Time в секундах = first_agent_reply_at - first_message_at.
     # Денормализован, чтобы AVG/PERCENTILE-запросы не считали разность каждый раз.
     response_time_sec: Mapped[int | None] = mapped_column(Integer)
+
+    # Денормализованная агрегированная тональность по сообщениям клиента
+    # в диалоге. Значение в [-1.0, 1.0]: -1 = всё негативно, +1 = всё позитивно.
+    # Пересчитывается после batch-анализа в `recompute_conversation_sentiment`.
+    sentiment_score: Mapped[float | None] = mapped_column()
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
@@ -281,10 +300,30 @@ class Message(Base):
         DateTime(timezone=True), nullable=False
     )
 
+    # NLP/AI поля (заполняются воркером, см. app/nlp/sentiment.py).
+    # sentiment NULL = ещё не обработано; sentiment_at — когда обработали
+    # (нужно, чтобы при смене модели не пере-анализировать всё подряд).
+    sentiment: Mapped[Sentiment | None] = mapped_column(
+        SAEnum(Sentiment, name="message_sentiment"),
+        nullable=True,
+    )
+    sentiment_confidence: Mapped[float | None] = mapped_column()
+    sentiment_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    sentiment_model: Mapped[str | None] = mapped_column(String(100))
+
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
 
     __table_args__ = (
         Index("ix_messages_conversation_sent", "conversation_id", "sent_at"),
+        # Воркер берёт необработанные сообщения батчами по интеграции —
+        # частичный индекс по conversation_id + sent_at для NULL sentiment.
+        Index(
+            "ix_messages_sentiment_pending",
+            "conversation_id",
+            "sent_at",
+            postgresql_where=sql_text("sentiment IS NULL"),
+            sqlite_where=sql_text("sentiment IS NULL"),
+        ),
         Index(
             "uq_messages_conversation_external",
             "conversation_id",

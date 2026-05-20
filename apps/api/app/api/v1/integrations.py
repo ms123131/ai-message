@@ -347,6 +347,42 @@ async def trigger_import(
     return job
 
 
+@router.post(
+    "/{integration_id}/analyze-sentiment",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@limiter.limit("6/minute")
+async def trigger_sentiment_analysis(
+    request: Request,  # noqa: ARG001 — нужен slowapi
+    integration_id: str,
+    batch_size: int = Query(200, ge=10, le=1000),
+    session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
+) -> dict[str, str]:
+    """Запускает батч-анализ тональности для интеграции (один проход).
+
+    Воркер берёт до `batch_size` необработанных сообщений (sentiment IS NULL)
+    и классифицирует их через fast-LLM. Если необработанных больше — нужно
+    дёрнуть ещё раз. Это сознательно: не хотим, чтобы одна интеграция
+    блокировала очередь надолго при первом импорте за полгода истории.
+    """
+    from app.workers.redis_pool import get_pool
+
+    integration = await _get_owned(session, integration_id, user)
+
+    pool = await get_pool()
+    job = await pool.enqueue_job(
+        "analyze_sentiment_for_integration",
+        integration.id,
+        batch_size,
+    )
+    return {
+        "status": "accepted",
+        "job_id": getattr(job, "job_id", "unknown"),
+        "integration_id": integration.id,
+    }
+
+
 @router.get("/{integration_id}/import-jobs", response_model=list[ImportJobOut])
 async def list_import_jobs(
     integration_id: str,
