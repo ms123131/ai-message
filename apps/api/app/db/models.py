@@ -17,6 +17,7 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+from app.security.types import EncryptedString
 
 
 class Tenant(Base):
@@ -112,11 +113,11 @@ class Integration(Base):
 
     # OAuth-параметры
     client_id: Mapped[str | None] = mapped_column(String(255))
-    # ВАЖНО: client_secret в production должен шифроваться (Vault/KMS).
-    # На этапе MVP храним как есть, но не возвращаем в API-ответах.
-    client_secret: Mapped[str | None] = mapped_column(String(255))
-    access_token: Mapped[str | None] = mapped_column(Text)
-    refresh_token: Mapped[str | None] = mapped_column(Text)
+    # Шифруются через EncryptedString (Fernet) на уровне ORM. В БД лежит
+    # ciphertext (urlsafe-base64). Ключ — settings.encryption_key.
+    client_secret: Mapped[str | None] = mapped_column(EncryptedString)
+    access_token: Mapped[str | None] = mapped_column(EncryptedString)
+    refresh_token: Mapped[str | None] = mapped_column(EncryptedString)
     member_id: Mapped[str | None] = mapped_column(String(100))
     scope: Mapped[str | None] = mapped_column(String(500))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
