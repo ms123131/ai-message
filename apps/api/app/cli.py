@@ -18,7 +18,11 @@ import json
 from app.db.models import ImportJob, Integration
 from app.db.session import AsyncSessionLocal
 from app.integrations.bitrix24.client import BitrixClient
-from app.integrations.bitrix24.crm import extract_crm_refs_from_session
+from app.integrations.bitrix24.crm import (
+    extract_crm_refs_from_session,
+    link_chats_for_integration,
+    refresh_known_crm_entities,
+)
 from app.integrations.bitrix24.importer import run_import_job
 
 
@@ -90,6 +94,28 @@ async def _cmd_debug_history(integration_id: str, chat_id: int, full: bool) -> i
         return 0
 
 
+async def _cmd_crm_link(integration_id: str, days: int, limit: int) -> int:
+    async with AsyncSessionLocal() as session:
+        integration = await session.get(Integration, integration_id)
+        if not integration:
+            print(f"Integration {integration_id!r} not found", file=sys.stderr)
+            return 2
+        async with BitrixClient(integration, session) as client:
+            refreshed = await refresh_known_crm_entities(client, session, integration)
+            stats = await link_chats_for_integration(
+                client,
+                session,
+                integration,
+                days=days,
+                max_entities=limit,
+            )
+        print(
+            f"refreshed={refreshed} entities_scanned={stats['entities_scanned']} "
+            f"links_created={stats['links_created']}"
+        )
+        return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="app.cli", description="ai-message admin CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -110,6 +136,16 @@ def _build_parser() -> argparse.ArgumentParser:
     dbg.add_argument(
         "--full", action="store_true", help="вывести raw history целиком"
     )
+
+    link = sub.add_parser(
+        "crm-link",
+        help="Запустить обратный CRM-индекс (поиск сделок/лидов и привязка к диалогам)",
+    )
+    link.add_argument("--integration-id", required=True)
+    link.add_argument("--days", type=int, default=30)
+    link.add_argument(
+        "--limit", type=int, default=1000, help="максимум сущностей за проход"
+    )
     return parser
 
 
@@ -122,6 +158,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd == "debug-history":
         return asyncio.run(
             _cmd_debug_history(args.integration_id, args.chat_id, args.full)
+        )
+    if args.cmd == "crm-link":
+        return asyncio.run(
+            _cmd_crm_link(args.integration_id, args.days, args.limit)
         )
     return 1
 
