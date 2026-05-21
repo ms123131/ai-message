@@ -36,6 +36,13 @@ class _FakeClient:
     async def __aexit__(self, *exc):  # noqa: ANN001
         return None
 
+    async def batch(self, commands):
+        # link_chats_for_integration пакует imopenlines.crm.chat.get батчем,
+        # для unit-теста CRM-стадий нам это не нужно — отдаём пустые ответы,
+        # чтобы код пакетной линковки прошёл no-op.
+        self.calls.append("batch")
+        return {key: [] for key in commands}
+
     async def call(self, method, params=None):
         self.calls.append(method)
         if method == "crm.status.list":
