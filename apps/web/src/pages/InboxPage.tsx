@@ -632,7 +632,8 @@ function MessageBubble({ message }: { message: Message }) {
         )}
       >
         <div className="whitespace-pre-wrap break-words">{message.text}</div>
-        {side === "them" && <EntityChips entities={message.entities} />}
+        <EntityChips entities={message.entities} />
+
         <div
           className={cn(
             "mt-1 text-[10px]",
