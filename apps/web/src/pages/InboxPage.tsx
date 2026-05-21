@@ -369,6 +369,19 @@ function ConversationRow({
           </span>
         )}
       </div>
+      {conv.tags && conv.tags.length > 0 && (
+        <div className="mt-2 flex flex-wrap gap-1">
+          {conv.tags.slice(0, 4).map((tag) => (
+            <span
+              key={tag}
+              className="rounded bg-brand-50 px-1.5 py-0.5 text-[11px] text-brand-700"
+              title={`Тема: ${tag.replace(/_/g, " ")}`}
+            >
+              #{tag.replace(/_/g, " ")}
+            </span>
+          ))}
+        </div>
+      )}
     </button>
   );
 }

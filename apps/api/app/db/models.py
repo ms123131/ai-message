@@ -227,6 +227,12 @@ class Conversation(Base):
     # Пересчитывается после batch-анализа в `recompute_conversation_sentiment`.
     sentiment_score: Mapped[float | None] = mapped_column()
 
+    # Денормализованные теги диалога (фаза 6.2). Объединение уникальных
+    # тегов из всех проанализированных клиентских сообщений диалога.
+    # NULL = ни одно сообщение ещё не тегировано; [] = тегировано, но
+    # ни одна тема не сматчилась.
+    tags: Mapped[list[str] | None] = mapped_column(SAJSON)
+
     # LLM-резюме диалога (фаза 6.3). NULL = ещё не сгенерировано.
     # summary_messages_count хранит число сообщений на момент генерации —
     # сравнение с актуальным `len(messages)` даёт признак устаревания.
