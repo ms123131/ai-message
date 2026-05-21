@@ -30,6 +30,7 @@ class ConversationOut(BaseModel):
     status: ConversationStatus
     created_at: datetime
     updated_at: datetime
+    sentiment_score: float | None = None
 
 
 class ConversationListItem(ConversationOut):
