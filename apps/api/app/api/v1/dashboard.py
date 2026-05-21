@@ -839,59 +839,29 @@ async def by_manager(
     filters: _Filters = Depends(_filters_dep),
     session: AsyncSession = Depends(get_session),
 ) -> ByManagerResponse:
+    """Таблица операторов: кто и сколько работал за период.
+
+    Раньше группировка была по `Conversation.assigned_user_id`, но это поле
+    остаётся NULL у диалогов, пришедших через webhook (особенно Telegram —
+    Bitrix не отдаёт `session.OPERATOR_ID` без отдельного запроса). В итоге
+    таблица оказывалась пустой даже там, где операторы фактически отвечали.
+    Текущая версия группирует по `Message.sender_external_id` от агентов:
+    это поле заполняется и в импортёре, и в webhook-парсере.
+
+    «Диалогов» теперь — distinct conversations, где этот оператор писал.
+    FRT — медиана/p90 `response_time_sec` по диалогам с такими ответами.
+    «Открыто» — сколько из этих диалогов сейчас в статусе open.
+    """
     range_from, _ = _window(days)
     dialect = session.bind.dialect.name if session.bind else "postgresql"
 
-    # Базовая агрегация: по assigned_user_id за окно. CASE(...) работает
-    # одинаково в Postgres и SQLite — не уходим в func.sum(bool).
-    opens_case = func.sum(
-        case(
-            (Conversation.status == ConversationStatus.open, 1), else_=0
-        )
-    ).label("opens")
-    conv_agg = (
+    # Шаг 1: сообщения от агентов за окно — основной источник правды.
+    msgs_agg = (
         select(
             Conversation.integration_id.label("integration_id"),
-            Conversation.assigned_user_id.label("operator_id"),
-            func.count(Conversation.id).label("convs"),
-            opens_case,
-            _percentile_expr(
-                Conversation.response_time_sec, 0.5, dialect
-            ).label("frt_med"),
-            _percentile_expr(
-                Conversation.response_time_sec, 0.9, dialect
-            ).label("frt_p90"),
-        )
-        .where(
-            *filters.conv_filters,
-            Conversation.assigned_user_id.is_not(None),
-            Conversation.created_at >= range_from,
-        )
-        .group_by(Conversation.integration_id, Conversation.assigned_user_id)
-    )
-
-    rows = (await session.execute(conv_agg)).all()
-    if not rows:
-        return ByManagerResponse(rows=[])
-
-    # Подтянем имена/аватары из PortalUser одним запросом.
-    pairs = [(r.integration_id, r.operator_id) for r in rows]
-    portal_users = (
-        await session.execute(
-            select(PortalUser).where(
-                PortalUser.integration_id.in_({p[0] for p in pairs}),
-                PortalUser.external_id.in_({p[1] for p in pairs}),
-            )
-        )
-    ).scalars().all()
-    pu_index = {(pu.integration_id, pu.external_id): pu for pu in portal_users}
-
-    # Сообщений от оператора за окно.
-    msgs_stmt = (
-        select(
-            Conversation.integration_id,
-            Message.sender_external_id,
-            func.count(Message.id),
+            Message.sender_external_id.label("operator_id"),
+            func.count(Message.id).label("messages_sent"),
+            func.count(distinct(Conversation.id)).label("convs"),
         )
         .join(Conversation, Conversation.id == Message.conversation_id)
         .where(
@@ -902,14 +872,90 @@ async def by_manager(
         )
         .group_by(Conversation.integration_id, Message.sender_external_id)
     )
-    msgs_index: dict[tuple[str, str], int] = {
+    msgs_rows = (await session.execute(msgs_agg)).all()
+    if not msgs_rows:
+        return ByManagerResponse(rows=[])
+
+    pairs: list[tuple[str, str]] = [(r.integration_id, r.operator_id) for r in msgs_rows]
+
+    # Шаг 2: «открыто сейчас» — distinct diaлогов в статусе open для каждой пары.
+    # Один запрос группировкой по тем же ключам.
+    open_agg = (
+        select(
+            Conversation.integration_id,
+            Message.sender_external_id,
+            func.count(distinct(Conversation.id)).label("opens"),
+        )
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .where(
+            *filters.conv_filters,
+            Message.sender_type == SenderType.agent,
+            Message.sender_external_id.is_not(None),
+            Message.sent_at >= range_from,
+            Conversation.status == ConversationStatus.open,
+        )
+        .group_by(Conversation.integration_id, Message.sender_external_id)
+    )
+    opens_index: dict[tuple[str, str], int] = {
         (intg, op): int(cnt or 0)
-        for intg, op, cnt in (await session.execute(msgs_stmt)).all()
+        for intg, op, cnt in (await session.execute(open_agg)).all()
     }
 
+    # Шаг 3: FRT — берём `response_time_sec` по диалогам, где этот оператор
+    # реально что-то отвечал в окне (через DISTINCT subquery). Без этого
+    # медиана была бы по всем диалогам, что неверно, если оператор подключился
+    # только к части.
+    conv_op_pairs = (
+        select(
+            Conversation.integration_id.label("integration_id"),
+            Message.sender_external_id.label("operator_id"),
+            Conversation.id.label("conv_id"),
+            Conversation.response_time_sec.label("rt"),
+        )
+        .join(Conversation, Conversation.id == Message.conversation_id)
+        .where(
+            *filters.conv_filters,
+            Message.sender_type == SenderType.agent,
+            Message.sender_external_id.is_not(None),
+            Message.sent_at >= range_from,
+            Conversation.response_time_sec.is_not(None),
+        )
+        .distinct()
+        .subquery()
+    )
+    frt_agg = (
+        select(
+            conv_op_pairs.c.integration_id,
+            conv_op_pairs.c.operator_id,
+            _percentile_expr(conv_op_pairs.c.rt, 0.5, dialect).label("frt_med"),
+            _percentile_expr(conv_op_pairs.c.rt, 0.9, dialect).label("frt_p90"),
+        )
+        .group_by(conv_op_pairs.c.integration_id, conv_op_pairs.c.operator_id)
+    )
+    frt_index: dict[tuple[str, str], tuple[float | None, float | None]] = {
+        (intg, op): (
+            float(med) if med is not None else None,
+            float(p90) if p90 is not None else None,
+        )
+        for intg, op, med, p90 in (await session.execute(frt_agg)).all()
+    }
+
+    # Шаг 4: имена/аватары из PortalUser.
+    portal_users = (
+        await session.execute(
+            select(PortalUser).where(
+                PortalUser.integration_id.in_({p[0] for p in pairs}),
+                PortalUser.external_id.in_({p[1] for p in pairs}),
+            )
+        )
+    ).scalars().all()
+    pu_index = {(pu.integration_id, pu.external_id): pu for pu in portal_users}
+
     result_rows: list[ManagerRow] = []
-    for r in rows:
-        pu = pu_index.get((r.integration_id, r.operator_id))
+    for r in msgs_rows:
+        key = (r.integration_id, r.operator_id)
+        pu = pu_index.get(key)
+        med, p90 = frt_index.get(key, (None, None))
         result_rows.append(
             ManagerRow(
                 operator_id=r.operator_id,
@@ -918,12 +964,10 @@ async def by_manager(
                 work_position=pu.work_position if pu else None,
                 email=pu.email if pu else None,
                 conversations=int(r.convs or 0),
-                open_conversations=int(r.opens or 0),
-                frt_median_sec=int(r.frt_med) if r.frt_med is not None else None,
-                frt_p90_sec=int(r.frt_p90) if r.frt_p90 is not None else None,
-                messages_sent=msgs_index.get(
-                    (r.integration_id, r.operator_id), 0
-                ),
+                open_conversations=opens_index.get(key, 0),
+                frt_median_sec=int(med) if med is not None else None,
+                frt_p90_sec=int(p90) if p90 is not None else None,
+                messages_sent=int(r.messages_sent or 0),
             )
         )
     result_rows.sort(key=lambda x: x.conversations, reverse=True)

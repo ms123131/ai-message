@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
@@ -403,32 +403,59 @@ function ConversationView({ conv }: { conv: ConversationListItem }) {
     summaryCount !== undefined &&
     conv.message_count > summaryCount;
 
-  const [toast, setToast] = useState<string | null>(null);
-  const summarizeMutation = useMutation({
-    mutationFn: () => api.summarizeConversation(conv.id),
-    onSuccess: () => {
-      setToast("Сводка генерируется. Появится через 5-15 секунд.");
-      setTimeout(() => setToast(null), 6000);
-      // Подтянем свежий conv через 4 и 10 секунд — smart-LLM небыстрая.
-      setTimeout(() => {
-        qc.invalidateQueries({ queryKey: ["conversation", conv.id] });
-      }, 4000);
-      setTimeout(() => {
-        qc.invalidateQueries({ queryKey: ["conversation", conv.id] });
-        qc.invalidateQueries({ queryKey: ["conversations"] });
-      }, 10000);
-    },
-    onError: (err: Error) => {
-      setToast(`Не удалось запустить: ${err.message}`);
-      setTimeout(() => setToast(null), 6000);
-    },
-  });
+  // Поллим conversation после клика «Сводка», пока summary_at не изменится.
+  // Без этого кнопка отпускалась после 202, и пользователь не понимал, готово
+  // ли. Таймаут 90с — на случай зависшей smart-LLM/воркера.
+  const [summarizing, setSummarizing] = useState(false);
+  const [summarizeError, setSummarizeError] = useState<string | null>(null);
+  const summaryBaselineRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!summarizing) return;
+    let cancelled = false;
+    const startedAt = Date.now();
+    const tick = async () => {
+      try {
+        const fresh = await api.getConversation(conv.id);
+        qc.setQueryData(["conversation", conv.id], fresh);
+        if (fresh.summary_at && fresh.summary_at !== summaryBaselineRef.current) {
+          if (!cancelled) setSummarizing(false);
+          qc.invalidateQueries({ queryKey: ["conversations"] });
+          return;
+        }
+      } catch {
+        // Сеть могла моргнуть — продолжаем
+      }
+      if (Date.now() - startedAt > 90_000) {
+        if (!cancelled) setSummarizing(false);
+        return;
+      }
+      if (cancelled) return;
+      setTimeout(tick, 3000);
+    };
+    setTimeout(tick, 3000);
+    return () => {
+      cancelled = true;
+    };
+  }, [summarizing, conv.id, qc]);
+
+  const handleSummarize = async () => {
+    setSummarizeError(null);
+    summaryBaselineRef.current = detailed.summary_at ?? null;
+    setSummarizing(true);
+    try {
+      await api.summarizeConversation(conv.id);
+    } catch (err) {
+      setSummarizing(false);
+      setSummarizeError(
+        (err as Error).message || "Не удалось запустить генерацию сводки",
+      );
+    }
+  };
 
   const smartReady = llmStatusQ.data?.smart_available ?? false;
   const summarizeDisabled =
-    summarizeMutation.isPending ||
-    !smartReady ||
-    conv.message_count === 0;
+    summarizing || !smartReady || conv.message_count === 0;
   const summarizeTitle = !smartReady
     ? "Smart LLM-провайдер не настроен (LLM_SMART_*)"
     : conv.message_count === 0
@@ -450,12 +477,12 @@ function ConversationView({ conv }: { conv: ConversationListItem }) {
           </div>
           <div className="flex flex-col items-end gap-1">
             <Button
-              onClick={() => summarizeMutation.mutate()}
+              onClick={handleSummarize}
               disabled={summarizeDisabled}
               title={summarizeTitle}
               variant="secondary"
             >
-              {summarizeMutation.isPending ? (
+              {summarizing ? (
                 <>
                   <Loader2 className="h-4 w-4 animate-spin" /> Генерирую…
                 </>
@@ -469,12 +496,12 @@ function ConversationView({ conv }: { conv: ConversationListItem }) {
                 </>
               )}
             </Button>
-            {toast && (
+            {summarizeError && (
               <div
-                role="status"
-                className="max-w-xs rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-800"
+                role="alert"
+                className="max-w-xs rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700"
               >
-                {toast}
+                {summarizeError}
               </div>
             )}
           </div>

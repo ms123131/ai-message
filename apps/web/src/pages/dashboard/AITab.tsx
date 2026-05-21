@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
   Cell,
@@ -142,6 +142,7 @@ function SentimentBlock({ filters }: { filters: DashboardFilters }) {
           integrationId={targetIntegrationId}
           llmReady={llmReady}
           loading={llmStatusQ.isLoading}
+          filters={filters}
         />
       </div>
 
@@ -371,50 +372,93 @@ function TopNegativeList({
   );
 }
 
+// Максимум, сколько ждём, пока воркер закончит размечать sentiment.
+// На больших историях (тысячи сообщений) одного прохода batch_size=200
+// может не хватить — UI всё равно отпускает кнопку через 90 сек, чтобы
+// не зависнуть навсегда, и пользователь жмёт ещё раз.
+const ANALYSIS_POLL_TIMEOUT_MS = 90_000;
+const ANALYSIS_POLL_INTERVAL_MS = 3_000;
+
 function RunAnalysisButton({
   integrationId,
   llmReady,
   loading,
+  filters,
 }: {
   integrationId: string | null;
   llmReady: boolean;
   loading?: boolean;
+  filters: DashboardFilters;
 }) {
   const qc = useQueryClient();
-  const [toast, setToast] = useState<string | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  // Снимок состояния до клика — чтобы понять, сдвинулся ли счётчик.
+  const baselineRef = useRef<{ analyzed: number; pending: number } | null>(null);
 
-  const mutation = useMutation({
-    mutationFn: () => {
-      if (!integrationId)
-        return Promise.reject(new Error("Нет подключённой интеграции"));
-      return api.triggerSentimentAnalysis(integrationId);
-    },
-    onSuccess: () => {
-      setToast(
-        "Анализ запущен. Результаты появятся за 10-60 секунд — страница обновится автоматически.",
-      );
-      setTimeout(() => setToast(null), 8000);
-      // Воркер может отрабатывать от нескольких секунд до минуты — особенно
-      // на первом запуске, когда сообщений много. Один invalidate через 3с
-      // часто ловит ещё пустое состояние, и пользователь думает, что не
-      // сработало. Поллим серией: 2, 6, 12, 20, 35, 55 сек после клика.
-      const intervals = [2000, 6000, 12000, 20000, 35000, 55000];
-      for (const ms of intervals) {
-        setTimeout(() => {
-          qc.invalidateQueries({ queryKey: ["dash-sentiment"] });
-          qc.invalidateQueries({ queryKey: ["dash-top-negative"] });
-          qc.invalidateQueries({ queryKey: ["dash-overview"] });
-        }, ms);
+  // Поллинг dashboard/sentiment: завершаемся, когда analyzed вырос или
+  // pending уменьшился относительно baseline, либо по таймауту.
+  useEffect(() => {
+    if (!analyzing) return;
+    let cancelled = false;
+    const startedAt = Date.now();
+
+    const tick = async () => {
+      try {
+        const fresh = await api.getDashboardSentiment(filters);
+        // Кладём ответ в кэш напрямую, чтобы UI обновился без лишнего запроса.
+        qc.setQueryData(["dash-sentiment", filters], fresh);
+        qc.invalidateQueries({ queryKey: ["dash-top-negative"] });
+        qc.invalidateQueries({ queryKey: ["dash-overview"] });
+
+        const baseline = baselineRef.current;
+        if (
+          baseline &&
+          (fresh.analyzed_messages > baseline.analyzed ||
+            fresh.pending_messages < baseline.pending)
+        ) {
+          if (!cancelled) setAnalyzing(false);
+          return;
+        }
+      } catch {
+        // Сеть могла моргнуть — продолжаем поллить.
       }
-    },
-    onError: (err: Error) => {
-      setToast(`Не удалось запустить: ${err.message}`);
-      setTimeout(() => setToast(null), 6000);
-    },
-  });
+      if (Date.now() - startedAt > ANALYSIS_POLL_TIMEOUT_MS) {
+        if (!cancelled) setAnalyzing(false);
+        return;
+      }
+      if (cancelled) return;
+      setTimeout(tick, ANALYSIS_POLL_INTERVAL_MS);
+    };
 
-  const disabled =
-    loading || !llmReady || !integrationId || mutation.isPending;
+    // Первый опрос — сразу, без задержки, чтобы быстро показать прогресс.
+    setTimeout(tick, ANALYSIS_POLL_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+    };
+  }, [analyzing, filters, qc]);
+
+  const handleClick = async () => {
+    if (!integrationId) return;
+    setError(null);
+    const cached = qc.getQueryData<{
+      analyzed_messages: number;
+      pending_messages: number;
+    }>(["dash-sentiment", filters]);
+    baselineRef.current = {
+      analyzed: cached?.analyzed_messages ?? 0,
+      pending: cached?.pending_messages ?? 0,
+    };
+    setAnalyzing(true);
+    try {
+      await api.triggerSentimentAnalysis(integrationId);
+    } catch (err) {
+      setAnalyzing(false);
+      setError((err as Error).message || "Не удалось запустить анализ");
+    }
+  };
+
+  const disabled = loading || !llmReady || !integrationId || analyzing;
   const title = !llmReady
     ? "LLM-провайдер не настроен"
     : !integrationId
@@ -423,14 +467,10 @@ function RunAnalysisButton({
 
   return (
     <div className="flex flex-col items-end gap-1">
-      <Button
-        onClick={() => mutation.mutate()}
-        disabled={disabled}
-        title={title}
-      >
-        {mutation.isPending ? (
+      <Button onClick={handleClick} disabled={disabled} title={title}>
+        {analyzing ? (
           <>
-            <Loader2 className="h-4 w-4 animate-spin" /> Запускаю…
+            <Loader2 className="h-4 w-4 animate-spin" /> Анализирую…
           </>
         ) : (
           <>
@@ -438,12 +478,12 @@ function RunAnalysisButton({
           </>
         )}
       </Button>
-      {toast && (
+      {error && (
         <div
-          role="status"
-          className="max-w-xs rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-800"
+          role="alert"
+          className="max-w-xs rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700"
         >
-          {toast}
+          {error}
         </div>
       )}
     </div>
