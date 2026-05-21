@@ -16,7 +16,7 @@ from typing import Any
 
 from sqlalchemy import select
 
-from app.db.models import Conversation, Message, Sentiment
+from app.db.models import Conversation, Message, SenderType, Sentiment
 from app.db.session import AsyncSessionLocal
 from app.nlp.sentiment import (
     analyze_messages_batch,
@@ -63,6 +63,10 @@ async def analyze_sentiment_for_integration(
                     .where(
                         Conversation.integration_id == integration_id,
                         Message.sentiment.is_(None),
+                        # Дашборд и agg по диалогу считают только клиентские
+                        # сообщения. Sentiment для сообщений операторов нигде
+                        # не используется — нет смысла тратить на них токены.
+                        Message.sender_type == SenderType.client,
                     )
                     .order_by(Message.sent_at.desc())
                     .limit(batch_size)
