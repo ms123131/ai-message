@@ -62,6 +62,11 @@ async def _upsert_conversation(
     )
     conv = result.scalar_one_or_none()
     if conv:
+        # Бэкфил line_id, если в момент создания диалога он был неизвестен.
+        # Например, диалог создан старой версией парсера (без line_id),
+        # а сейчас в событии он есть — заполняем, чтобы дашборд by-line видел.
+        if ev.line_id and not conv.line_id:
+            conv.line_id = ev.line_id
         return conv
     conv = Conversation(
         id=_new_id("conv"),
@@ -69,6 +74,7 @@ async def _upsert_conversation(
         external_id=ev.chat_id,
         channel=ev.channel,
         contact_external_id=ev.connector_chat_id,
+        line_id=ev.line_id,
         status=ConversationStatus.open,
     )
     session.add(conv)

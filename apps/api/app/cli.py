@@ -10,12 +10,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import secrets
 import sys
 
-import json
+from sqlalchemy import not_, or_, select, update
 
-from app.db.models import ImportJob, Integration
+from app.db.models import (
+    Conversation,
+    ImportJob,
+    Integration,
+    Message,
+)
 from app.db.session import AsyncSessionLocal
 from app.integrations.bitrix24.client import BitrixClient
 from app.integrations.bitrix24.crm import (
@@ -24,6 +30,8 @@ from app.integrations.bitrix24.crm import (
     refresh_known_crm_entities,
 )
 from app.integrations.bitrix24.importer import run_import_job
+from app.nlp.bitrix_system_text import SQL_LIKE_FRAGMENTS as _BITRIX_SYSTEM_LIKES
+from app.nlp.sentiment import recompute_conversation_sentiment_score
 
 
 async def _cmd_import_bitrix24(integration_id: str, days: int) -> int:
@@ -116,6 +124,82 @@ async def _cmd_crm_link(integration_id: str, days: int, limit: int) -> int:
         return 0
 
 
+async def _cmd_cleanup_system_sentiment(integration_id: str | None) -> int:
+    """Сбрасывает sentiment у Bitrix-служебных сообщений + пересчитывает
+    `Conversation.sentiment_score` для затронутых диалогов.
+
+    Зачем: до фикса воркер размечал «Начат новый диалог №...» и подобные
+    тексты как neutral — они засоряли KPI и среднее по диалогу. Команда
+    откатывает прошлую разметку, и при следующем запуске анализа в выборку
+    они уже не попадут.
+    """
+    like_clauses = or_(*[Message.text.ilike(p) for p in _BITRIX_SYSTEM_LIKES])
+    async with AsyncSessionLocal() as session:
+        scope = select(Message.id, Message.conversation_id).where(
+            Message.sentiment.is_not(None),
+            like_clauses,
+        )
+        if integration_id:
+            scope = scope.join(
+                Conversation, Conversation.id == Message.conversation_id
+            ).where(Conversation.integration_id == integration_id)
+        rows = (await session.execute(scope)).all()
+        if not rows:
+            print("Нечего чистить — служебных сообщений с sentiment не найдено")
+            return 0
+        message_ids = [r[0] for r in rows]
+        conv_ids = sorted({r[1] for r in rows})
+        await session.execute(
+            update(Message)
+            .where(Message.id.in_(message_ids))
+            .values(
+                sentiment=None,
+                sentiment_confidence=None,
+                sentiment_at=None,
+                sentiment_model=None,
+            )
+        )
+        # Пересчёт денормализованного score по каждому затронутому диалогу.
+        for cid in conv_ids:
+            await recompute_conversation_sentiment_score(session, cid)
+        await session.commit()
+        print(
+            f"cleanup-system-sentiment: messages_reset={len(message_ids)} "
+            f"conversations_recomputed={len(conv_ids)}"
+            + (f" integration={integration_id}" if integration_id else " (all)")
+        )
+        return 0
+
+
+async def _cmd_mark_system_messages(integration_id: str | None) -> int:
+    """Переключает sender_type=system у Bitrix-служебных сообщений.
+
+    Применять после `cleanup-system-sentiment`. После этой команды
+    /conversations/.../messages не будет светить служебку как «клиент»,
+    и KPI «клиентских сообщений» станет честным.
+    """
+    from app.db.models import SenderType
+
+    like_clauses = or_(*[Message.text.ilike(p) for p in _BITRIX_SYSTEM_LIKES])
+    async with AsyncSessionLocal() as session:
+        stmt = update(Message).where(
+            like_clauses,
+            not_(Message.sender_type == SenderType.system),
+        )
+        if integration_id:
+            sub = select(Conversation.id).where(
+                Conversation.integration_id == integration_id
+            )
+            stmt = stmt.where(Message.conversation_id.in_(sub))
+        result = await session.execute(stmt.values(sender_type=SenderType.system))
+        await session.commit()
+        print(
+            f"mark-system-messages: updated={result.rowcount or 0}"
+            + (f" integration={integration_id}" if integration_id else " (all)")
+        )
+        return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="app.cli", description="ai-message admin CLI")
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -146,6 +230,19 @@ def _build_parser() -> argparse.ArgumentParser:
     link.add_argument(
         "--limit", type=int, default=1000, help="максимум сущностей за проход"
     )
+
+    cs = sub.add_parser(
+        "cleanup-system-sentiment",
+        help="Сбросить sentiment у Bitrix-служебных сообщений и пересчитать score диалогов",
+    )
+    cs.add_argument("--integration-id", default=None)
+
+    ms = sub.add_parser(
+        "mark-system-messages",
+        help="Перевести Bitrix-служебные сообщения в sender_type=system",
+    )
+    ms.add_argument("--integration-id", default=None)
+
     return parser
 
 
@@ -163,6 +260,10 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(
             _cmd_crm_link(args.integration_id, args.days, args.limit)
         )
+    if args.cmd == "cleanup-system-sentiment":
+        return asyncio.run(_cmd_cleanup_system_sentiment(args.integration_id))
+    if args.cmd == "mark-system-messages":
+        return asyncio.run(_cmd_mark_system_messages(args.integration_id))
     return 1
 
 

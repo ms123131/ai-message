@@ -14,10 +14,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import not_, or_, select
 
 from app.db.models import Conversation, Message, SenderType, Sentiment
 from app.db.session import AsyncSessionLocal
+from app.nlp.bitrix_system_text import SQL_LIKE_FRAGMENTS
 from app.nlp.sentiment import (
     analyze_messages_batch,
     recompute_conversation_sentiment_score,
@@ -67,6 +68,17 @@ async def analyze_sentiment_for_integration(
                         # сообщения. Sentiment для сообщений операторов нигде
                         # не используется — нет смысла тратить на них токены.
                         Message.sender_type == SenderType.client,
+                        # Bitrix-служебные тексты ("Начат новый диалог №...",
+                        # "[USER=...]" и т.п.) не несут эмоции — исключаем
+                        # ещё на SQL-уровне, чтобы не дёргать LLM на них.
+                        not_(
+                            or_(
+                                *[
+                                    Message.text.ilike(pattern)
+                                    for pattern in SQL_LIKE_FRAGMENTS
+                                ]
+                            )
+                        ),
                     )
                     .order_by(Message.sent_at.desc())
                     .limit(batch_size)
