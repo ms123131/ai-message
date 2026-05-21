@@ -166,8 +166,23 @@ SaaS-приложение для анализа коммуникационных
 ## Фаза 6 — Анализ (NLP / AI)
 
 Архитектурно делим LLM-задачи на **fast** (массовые: sentiment, тэги) и
-**smart** (нюансы: резюме, weekly insights). Каждый назначение —
-отдельный провайдер из конфига, можно одинаковый.
+**smart** (нюансы: резюме, weekly insights). Каждое назначение —
+отдельный провайдер из конфига, можно одинаковый. Локальные NLP-фичи
+(NER через Natasha, регулярки) идут без LLM-провайдера вообще.
+
+**Текущий статус подфаз:**
+
+| Подфаза | Статус | Что внутри |
+|---|---|---|
+| 6.0 LLM-абстракция | ✅ | base/claude/openai_compat/null/factory |
+| 6.1 Sentiment | ✅ | Message+Conversation поля, batch worker, dashboard, auto-cron |
+| 6.1.1 Sentiment UI | ✅ | бэйджи в Inbox, donut+top-negative, фильтр-чип |
+| 6.2 LLM-теги | ✅ | словарь 41 темы, Conversation.tags денормализация, чипы #тема в Inbox |
+| 6.3 LLM-резюме | ✅ | smart-LLM, кнопка «Сводка» в Inbox, индикатор устаревания |
+| 6.6 Извлечение сущностей | ✅ | Natasha NER + регулярки (phone/email/url/tracking/money), EntityChips |
+| 6.4 BERTopic | ⏳ | динамические темы поверх эмбеддингов |
+| 6.5 Эмбеддинги + pgvector | ⏳ | семантический поиск похожих диалогов |
+| 6.7 Weekly insights + аномалии + AI Control Panel | ⏳ | smart-LLM, детекторы всплесков, единая страница |
 
 ### 6.0 Базовая абстракция LLM-провайдеров ✅
 - [x] `app/integrations/llm/{base,claude,openai_compat,null,factory}.py`
@@ -195,111 +210,111 @@ SaaS-приложение для анализа коммуникационных
 - [x] `GET /dashboard/sentiment` — распределение по тональностям + avg_score
 - [x] Тесты: парсер, классификатор (stub + null), пересчёт score,
   endpoint, enqueue в arq
-- [ ] TODO: автоматический trigger по cron (сейчас только ручной)
+- [x] Авто-cron через `NLP_CRON_INTERVAL_MINUTES` (commit `27f9d79`).
+  `nlp_dispatch_cron` раздаёт sentiment+tags+entities на все
+  connected-интеграции; arq cron registers только если интервал > 0.
 
-### 6.1.1 Sentiment UI — вывод в дашборде и Inbox
+### 6.1.1 Sentiment UI ✅ (commit `e0be859`)
 
-Цель: показать клиенту, что AI-таб больше не заглушка. Используем уже
-существующий read-only endpoint `/dashboard/sentiment` и денормализованный
-`Conversation.sentiment_score`. Frontend-only, backend не трогаем (кроме
-расширения `ConversationListItem` одним полем).
+Frontend-вывод тональности на дашборде и в Inbox.
 
-#### Backend (минимум)
-- [ ] `ConversationOut` → добавить `sentiment_score: float | None`,
-  чтобы Inbox мог рисовать бэйдж без отдельного запроса. Тип уже есть
-  в модели, нужно только в схему.
-- [ ] `GET /dashboard/sentiment` уже отдаёт `buckets[]` + `avg_score`
-  + `pending_messages` — этого хватит для donut и KPI.
-- [ ] (опционально) `GET /dashboard/top-negative-conversations?limit=10` —
-  список диалогов с наименьшим `sentiment_score` за период. Без него
-  можно обойтись фильтрацией существующего `/conversations` на фронте,
-  но отдельный endpoint чище.
+- [x] `ConversationOut.sentiment_score` в API
+- [x] `GET /dashboard/top-negative-conversations` (commit `4721f7c`)
+- [x] `SentimentBadge` в карточке диалога Inbox + tooltip с описанием
+- [x] Фильтр-чип «Только негатив/позитив/нейтрал» в `DashboardFilterBar`
+- [x] KPI «Средняя тональность» в Overview-табе с дельтой к прошлому периоду
+- [x] AI-таб: donut по buckets + список топ-10 негативных + кнопка
+  «Запустить анализ» с polling до результата
+- [x] Empty state «подключите LLM-провайдера», баннер на Settings при
+  `LLM_FAST_PROVIDER=null`
+- [x] Vitest: бэйдж/donut/кнопка
 
-#### Inbox
-- [ ] Бэйдж-кружок в карточке диалога: зелёный (score > 0.2) / серый
-  (-0.2 ≤ score ≤ 0.2) / красный (score < -0.2). Серый/«нет данных» —
-  если `sentiment_score === null`.
-- [ ] Tooltip на бэйдже: «Тональность клиента: позитивная/нейтральная/
-  негативная, среднее N.NN из M сообщений».
-- [ ] Фильтр-чип «Только негатив» в `DashboardFilterBar` (передаёт
-  `sentiment=negative` на бэк — мелкое расширение `/conversations`).
+Отложено в 6.7: sentiment-таймлайн по дням, sentiment по операторам,
+per-message раскраска в просмотре диалога.
 
-#### Overview-таб дашборда
-- [ ] Девятая KPI-карточка «Средняя тональность» рядом с FRT/AHT.
-  Значение из `avg_score`, формат — `+0.42` / `-0.18`, цвет — по знаку,
-  дельта к прошлому периоду через стандартный `/dashboard/overview` (туда
-  добавляется новое поле `sentiment_avg` + `sentiment_avg_prev`).
-- [ ] Если `pending_messages > 0` — мягкая подпись «N сообщений ещё
-  анализируется», без алярма.
+### 6.2 LLM-теги / темы ✅ (commits `27f9d79`, `dacc589`, `4da8b48`)
 
-#### AI-таб дашборда
-- [ ] Заменить первую lock-карточку «sentiment скоро» на реальный блок:
-  - Donut-chart распределения позитив/нейтрал/негатив (Recharts PieChart,
-    палитра как у каналов)
-  - KPI-полоска: всего N клиентских сообщений, проанализировано M,
-    среднее по диалогам `avg_score`
-  - Список «Топ-10 негативных диалогов» с быстрым переходом в Inbox
-  - Кнопка «Запустить анализ свежих сообщений» → POST `/integrations/{id}/
-    analyze-sentiment`. Показывает toast «N сообщений отправлено в очередь».
-- [ ] Остальные 7 lock-карточек остаются как есть до фаз 6.2–6.7.
+- [x] `Message.{tags, tags_at, tags_model}` (JSON list 0-3) + миграция
+  0007 + частичный индекс `ix_messages_tags_pending`
+- [x] `app/nlp/tags.py`: `classify_tags(text, vocab)` через fast-LLM,
+  толерантный парсер (запятые/кавычки/пробелы вместо подчёркиваний),
+  словарь из `Settings.tags_vocabulary` (env `TAGS_VOCABULARY`)
+- [x] Расширенный дефолтный словарь — 41 тема по 7 категориям (деньги/
+  заказ/доставка, товар/услуга, техподдержка, жалобы, коммуникации,
+  намерения, fallback). Переопределяется через env.
+- [x] arq-таска `analyze_tags_for_integration` под локом `kind=tags`,
+  фильтр клиентских + Bitrix-служебных текстов
+- [x] `POST /api/v1/integrations/{id}/analyze-tags`
+- [x] `GET /api/v1/dashboard/tags` — топ-N с count/share, dialect-aware
+  (Postgres `jsonb_array_elements` / SQLite Python-итерация)
+- [x] AI-таб: TagsBlock с donut + список + кнопка «Запустить тегирование»
+  с polling (фикс залипания при pending=0 — commit `1b3ab4a`)
+- [x] **Денормализация на уровне Conversation** (`Conversation.tags` +
+  миграция 0008): worker после батча пересчитывает теги диалогов через
+  `recompute_conversation_tags`. В Inbox под карточкой — чипы `#тема`.
 
-#### Состояния и edge cases
-- [ ] Empty state, если ни одного сообщения не проанализировано:
-  «Подключите LLM-провайдера в настройках и нажмите Запустить анализ»
-  с прямой ссылкой на нужную страницу/документацию.
-- [ ] Если `LLM_FAST_PROVIDER=null` — на странице Settings показать
-  баннер «AI-фичи отключены: задайте `LLM_FAST_API_KEY`».
-- [ ] Loading skeleton, как в остальных табах.
+Отложено в 6.4: динамический словарь из топ-N кластеров BERTopic.
 
-#### Тесты
-- [ ] Vitest: рендер бэйджа для positive/neutral/negative/null score.
-- [ ] Vitest: donut собирается из buckets без падения на нулевых счётчиках.
-- [ ] Vitest: кнопка «Запустить анализ» делает POST и показывает toast.
+### 6.3 LLM-резюме диалогов ✅ (commits `6ab217c`, `96ad1b6`)
 
-#### Файлы (предположительно)
-- `apps/web/src/components/SentimentBadge.tsx` — переиспользуемый кружок
-- `apps/web/src/pages/InboxPage.tsx` — врендерить бэйдж + фильтр
-- `apps/web/src/components/DashboardFilterBar.tsx` — фильтр-чип
-- `apps/web/src/pages/dashboard/OverviewTab.tsx` — KPI-карточка
-- `apps/web/src/pages/dashboard/AITab.tsx` — donut + список + кнопка
-- `apps/web/src/lib/api.ts` — типы `SentimentResponse`,
-  `TopNegativeConversation`, метод `triggerSentiment(integrationId)`
-
-#### Что НЕ делаем в этой итерации
-- Sentiment-таймлайн (требует нового endpoint с группировкой по дням —
-  уйдёт в 6.7 «weekly insights»)
-- Sentiment по операторам (нужен JOIN на `assigned_user_id`, уйдёт
-  туда же)
-- Per-message раскраска в просмотре диалога — нужна только если
-  жалуется UX-тестирование, пока не доказано необходимым
-
-### 6.2 Тэги / темы (быстрые)
-- [ ] LLM-классификация сообщения в 1-3 темы из словаря портала
-  (типовые: «жалоба», «оплата», «доставка», ...). Динамический словарь
-  собираем из топ-N кластеров
-
-### 6.3 LLM-резюме диалогов
-- [ ] smart-провайдер, дешёвая модель (Haiku/Llama). Кнопка «резюме» в Inbox
-- [ ] Запись `Conversation.summary` + индикатор устаревания
+- [x] `Conversation.{summary, summary_at, summary_model,
+  summary_messages_count}` + миграция 0006
+- [x] `app/nlp/summary.py` + worker `summarize_conversation_task` через
+  smart-LLM (Claude Haiku/Llama по дефолту)
+- [x] `POST /api/v1/conversations/{id}/summarize` с rate-limit 12/min
+- [x] UI «Сводка» в Inbox + индикатор устаревания (если новые сообщения
+  пришли после `summary_at`)
 
 ### 6.4 Topic modeling (BERTopic)
 - [ ] Локально на CPU поверх эмбеддингов (см. 6.5). Раз в сутки
-  пересчитывает темы и сохраняет в `topic_clusters`
+  пересчитывает темы и сохраняет в `topic_clusters`. Замена статичного
+  словаря 6.2 на динамический.
 
 ### 6.5 Эмбеддинги + pgvector
 - [ ] `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`,
   CPU. Каждое сообщение → 384-dim вектор в `messages.embedding`
 - [ ] pgvector + ivfflat индекс, эндпоинт «семантический поиск похожих»
+- [ ] Кнопка «найти похожие диалоги» в Inbox
 
-### 6.6 Извлечение сущностей
-- [ ] Natasha для русского (имена, города, организации) + регулярки
-  для телефонов/email/трек-номеров. Сохраняем в `Message.entities`
-  как JSON
+### 6.6 Извлечение сущностей ✅ (commit `94bf3c9`)
+
+Локальный NER без LLM — Natasha + регулярки. Дешёвый и быстрый сток
+контактов и упоминаний.
+
+- [x] `Message.{entities, entities_at}` (JSON) + миграция 0009 +
+  частичный индекс `ix_messages_entities_pending`
+- [x] `app/nlp/entities.py`:
+  - Регулярки: телефон (нормализация в `+7XXX…`), email, URL,
+    трек-номер (EMS/UPS/СДЭК/DHL-like), денежная сумма с валютой
+    (RUB/USD/EUR/KZT/UAH) — нормализация в `{amount, currency, raw}`
+  - Natasha NER (lazy-init, один раз на процесс ~150мб моделей):
+    `person` / `location` / `organization`. Опциональна — если пакет
+    не установлен, регулярки продолжают работать
+- [x] Worker `analyze_entities_for_integration` под локом `kind=entities`.
+  Обрабатывает сообщения всех `sender_type` (контакт оператора нужен тоже)
+- [x] `POST /api/v1/integrations/{id}/analyze-entities`
+- [x] `nlp_dispatch_cron` теперь ставит и entities-задачу
+- [x] `MessageOut.entities` в API
+- [x] `EntityChips` в Inbox под клиентским сообщением: цветные
+  кликабельные чипы (телефон → `tel:`, email → `mailto:`, url → новая
+  вкладка); деньги форматируются по локали
+- [x] Тесты: 16 кейсов (regex unit, money parser, batch+БД, endpoint,
+  natasha stub без реальных моделей)
+
+Что НЕ сделано в этой итерации (намеренно):
+- Фильтр в Inbox «есть телефон/email/трек» — поле в БД готово, UI-чип
+  ~30 мин при необходимости
+- Дашборд-блок «топ упомянутых сумм/городов/компаний» — уйдёт в 6.7
+- Авто-обогащение CRM Bitrix24 контактами из чата — отдельная фича,
+  решить, в какие поля писать
 
 ### 6.7 Weekly insights и аномалии
 - [ ] smart-провайдер раз в неделю собирает overview + outlier-диалоги
   → presigned-доклад в кабинете
 - [ ] Аномалии: всплески объёма, резкие изменения SLA, пики негатива
+- [ ] Общий AI Control Panel: одна страница со статусом всех NLP-фич,
+  кнопки запуска ручных триггеров (sentiment/tags/entities), графики
+  доли проанализированного, последний прогон cron-а
 
 ---
 
@@ -486,6 +501,41 @@ cp .env.example .env  # ОБЯЗАТЕЛЬНО: задать POSTGRES_PASSWORD, 
 docker compose up -d --build
 # http://localhost:8080
 ```
+
+**Важно про миграции:** сервис `migrate` запускается one-shot и завершается.
+После обновления кода нужно пересобрать ВСЕ образы, включая `migrate`,
+иначе alembic не увидит новых ревизий. Самый надёжный путь:
+
+```bash
+docker compose build         # пересобрать всё
+docker compose run --rm migrate   # явно прогнать миграции
+docker compose up -d         # поднять стек
+```
+
+Проверить, что миграция применилась:
+```bash
+docker compose exec postgres psql -U aimessage -d aimessage \
+  -c "SELECT version_num FROM alembic_version;"
+```
+
+### NLP / AI фичи в проде
+
+```bash
+# Включить авто-cron sentiment+tags+entities
+echo "NLP_CRON_INTERVAL_MINUTES=10" >> .env
+docker compose up -d --force-recreate worker
+
+# Ручной триггер по интеграции (sentiment/tags = fast-LLM, entities = locally)
+curl -X POST http://localhost:8080/api/v1/integrations/<id>/analyze-sentiment
+curl -X POST http://localhost:8080/api/v1/integrations/<id>/analyze-tags
+curl -X POST http://localhost:8080/api/v1/integrations/<id>/analyze-entities
+
+# Сводка диалога (smart-LLM)
+curl -X POST http://localhost:8080/api/v1/conversations/<id>/summarize
+```
+
+Для tags/sentiment нужен `LLM_FAST_API_KEY`; для summary — `LLM_SMART_API_KEY`.
+Entities (Natasha + regex) работают без LLM-ключей.
 
 ### Git workflow
 
