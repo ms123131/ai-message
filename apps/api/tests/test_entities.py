@@ -56,6 +56,12 @@ def test_extract_phone_normalizes():
     assert out["phone"] == ["+79991234567"]
 
 
+def test_extract_phone_bare_with_trailing_letter():
+    # Реальный кейс из прод-данных: 11 цифр с 7 + опечатка-буква в конце
+    out = _extract_regex("79393956661э")
+    assert out["phone"] == ["+79393956661"]
+
+
 def test_normalize_phone_handles_dashes():
     assert _normalize_phone("8-999-123-45-67") == "+79991234567"
     assert _normalize_phone("+7 999 123 4567") == "+79991234567"
