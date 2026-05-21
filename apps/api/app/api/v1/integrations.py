@@ -418,6 +418,39 @@ async def trigger_tags_analysis(
 
 
 @router.post(
+    "/{integration_id}/analyze-entities",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@limiter.limit("6/minute")
+async def trigger_entities_analysis(
+    request: Request,  # noqa: ARG001 — нужен slowapi
+    integration_id: str,
+    batch_size: int = Query(500, ge=10, le=2000),
+    session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
+) -> dict[str, str]:
+    """Извлечение сущностей (телефон, email, URL, трек, сумма, NER) — фаза 6.6.
+
+    Работает локально через Natasha + регулярки, без LLM-вызовов. Можно
+    запускать одновременно с sentiment/tags — разные локи.
+    """
+    from app.workers.redis_pool import get_pool
+
+    integration = await _get_owned(session, integration_id, user)
+    pool = await get_pool()
+    job = await pool.enqueue_job(
+        "analyze_entities_for_integration",
+        integration.id,
+        batch_size,
+    )
+    return {
+        "status": "accepted",
+        "job_id": getattr(job, "job_id", "unknown"),
+        "integration_id": integration.id,
+    }
+
+
+@router.post(
     "/{integration_id}/enrich-conversations",
     status_code=status.HTTP_202_ACCEPTED,
 )

@@ -177,6 +177,24 @@ export type Message = {
   attachments: Array<Record<string, unknown>> | null;
   sent_at: string;
   tags: string[] | null;
+  entities: MessageEntities | null;
+};
+
+export type MoneyEntity = {
+  amount: number;
+  currency: string;
+  raw: string;
+};
+
+export type MessageEntities = {
+  phone?: string[];
+  email?: string[];
+  url?: string[];
+  tracking?: string[];
+  money?: MoneyEntity[];
+  person?: string[];
+  location?: string[];
+  organization?: string[];
 };
 
 export type DashboardStats = {
@@ -550,6 +568,12 @@ export const api = {
   triggerTagsAnalysis: (integrationId: string, batchSize = 200) =>
     request<{ status: string; job_id: string; integration_id: string }>(
       `/api/v1/integrations/${integrationId}/analyze-tags${qs({ batch_size: batchSize })}`,
+      { method: "POST" },
+    ),
+
+  triggerEntitiesAnalysis: (integrationId: string, batchSize = 500) =>
+    request<{ status: string; job_id: string; integration_id: string }>(
+      `/api/v1/integrations/${integrationId}/analyze-entities${qs({ batch_size: batchSize })}`,
       { method: "POST" },
     ),
 

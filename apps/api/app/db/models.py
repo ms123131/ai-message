@@ -331,6 +331,14 @@ class Message(Base):
     tags_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     tags_model: Mapped[str | None] = mapped_column(String(100))
 
+    # Извлечённые сущности (фаза 6.6). Структура:
+    # {"phone": ["+7..."], "email": [...], "url": [...], "tracking": [...],
+    #  "money": [{"amount": 12345, "currency": "RUB", "raw": "..."}],
+    #  "person": [...], "location": [...], "organization": [...]}
+    # NULL = ещё не обработано. {} = обработано, ничего не найдено.
+    entities: Mapped[dict[str, Any] | None] = mapped_column(SAJSON)
+    entities_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
 
     __table_args__ = (
@@ -351,6 +359,14 @@ class Message(Base):
             "sent_at",
             postgresql_where=sql_text("tags IS NULL"),
             sqlite_where=sql_text("tags IS NULL"),
+        ),
+        # Частичный индекс для entities-воркера (фаза 6.6).
+        Index(
+            "ix_messages_entities_pending",
+            "conversation_id",
+            "sent_at",
+            postgresql_where=sql_text("entities IS NULL"),
+            sqlite_where=sql_text("entities IS NULL"),
         ),
         Index(
             "uq_messages_conversation_external",
