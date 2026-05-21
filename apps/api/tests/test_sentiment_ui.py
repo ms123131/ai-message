@@ -184,11 +184,24 @@ async def test_top_negative_conversations(client, auth_tenant_id):
     resp = await client.get("/api/v1/dashboard/top-negative-conversations?limit=10")
     assert resp.status_code == 200, resp.text
     items = resp.json()["items"]
-    # Только cs_neg/cs_neu/cs_pos (cs_nul без score исключаем).
+    # По дефолту threshold=0.0 → только реально отрицательные. Нейтральный
+    # cs_neu (0.0) и положительный cs_pos в выдачу не попадают.
     ids = [it["conversation_id"] for it in items]
-    assert ids == ["cs_neg", "cs_neu", "cs_pos"]
+    assert ids == ["cs_neg"]
     assert items[0]["sentiment_score"] == pytest.approx(-0.8)
     assert items[0]["message_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_top_negative_threshold_includes_neutral(client, auth_tenant_id):
+    """При threshold=0.5 в выдачу попадают и нейтралы (score < 0.5)."""
+    await _seed_with_sentiment(auth_tenant_id)
+    resp = await client.get(
+        "/api/v1/dashboard/top-negative-conversations?threshold=0.5"
+    )
+    assert resp.status_code == 200, resp.text
+    ids = [it["conversation_id"] for it in resp.json()["items"]]
+    assert ids == ["cs_neg", "cs_neu"]
 
 
 @pytest.mark.asyncio

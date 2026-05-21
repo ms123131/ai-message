@@ -1506,13 +1506,21 @@ class TopNegativeResponse(BaseModel):
 async def top_negative_conversations(
     days: int = Query(30, ge=1, le=365),
     limit: int = Query(10, ge=1, le=50),
+    threshold: float = Query(
+        0.0,
+        ge=-1.0,
+        le=1.0,
+        description="Берём только диалоги со sentiment_score < threshold. "
+        "По умолчанию 0 — реально негативные. Можно ослабить до 0.2, "
+        "чтобы включить «слегка прохладные».",
+    ),
     filters: _Filters = Depends(_filters_dep),
     session: AsyncSession = Depends(get_session),
 ) -> TopNegativeResponse:
     """Топ диалогов с наименьшим sentiment_score за период.
 
-    Берём только проанализированные диалоги (sentiment_score IS NOT NULL).
-    Сортируем по score ASC: самые негативные — первыми.
+    Возвращает только диалоги со score < threshold (default 0). Если ничего
+    нет — клиенты довольны, на фронте показывается пустое состояние.
     """
     range_from, _ = _window(days)
 
@@ -1531,6 +1539,7 @@ async def top_negative_conversations(
         .where(
             *filters.conv_filters,
             Conversation.sentiment_score.is_not(None),
+            Conversation.sentiment_score < threshold,
             Conversation.created_at >= range_from,
         )
         .order_by(Conversation.sentiment_score.asc())

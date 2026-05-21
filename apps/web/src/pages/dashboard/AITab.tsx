@@ -350,7 +350,15 @@ function TopNegativeList({
                   </div>
                 </div>
                 <div className="shrink-0 text-right">
-                  <div className="font-mono text-sm font-semibold tabular-nums text-rose-700">
+                  <div
+                    className={`font-mono text-sm font-semibold tabular-nums ${
+                      it.sentiment_score < -0.2
+                        ? "text-rose-700"
+                        : it.sentiment_score > 0.2
+                          ? "text-emerald-700"
+                          : "text-slate-600"
+                    }`}
+                  >
                     {fmtScore(it.sentiment_score)}
                   </div>
                 </div>
