@@ -10,7 +10,6 @@ import {
 } from "recharts";
 import {
   AlertCircle,
-  Bot,
   CheckCircle2,
   Hash,
   Lightbulb,
@@ -84,9 +83,10 @@ function Hero() {
             AI-аналитика
           </h2>
           <p className="mt-1 max-w-2xl text-sm text-slate-600">
-            Тональность диалогов уже доступна — запускайте анализ и смотрите,
-            какие клиенты остались недовольны. Остальные модели подключим в
-            ближайших обновлениях.
+            Готово: тональность клиента, авто-теги тем, сводка диалога одной
+            кнопкой, распознавание контактов и сущностей в сообщениях.
+            Дальше — обнаружение аномалий, оценка качества ответов и
+            еженедельные инсайты.
           </p>
         </div>
       </div>
@@ -859,45 +859,12 @@ const LOCKED_FEATURES: Feature[] = [
     preview: <QualityScorePreview score={87} />,
   },
   {
-    icon: Bot,
-    accent: "bg-sky-50 text-sky-600",
-    title: "Авто-резюме длинных диалогов",
-    description:
-      "Не читать 50 сообщений — кнопка «Сводка» в Inbox даёт 3 буллета с сутью и решением.",
-    preview: (
-      <ul className="space-y-1 text-xs text-slate-600">
-        <li>• Клиент не получил товар, заказ #12345</li>
-        <li>• Оператор отправил трек-номер и принёс извинения</li>
-        <li>• Решено: компенсация 500 ₽ на следующий заказ</li>
-      </ul>
-    ),
-  },
-  {
     icon: TrendingDown,
     accent: "bg-pink-50 text-pink-600",
     title: "Прогноз оттока клиентов",
     description:
       "Модель оценивает риск ухода клиента на основе истории обращений и тональности. Список «обратите внимание» — в дашборде.",
     preview: <ChurnPreview at_risk={3} watch={12} healthy={84} />,
-  },
-  {
-    icon: Sparkles,
-    accent: "bg-indigo-50 text-indigo-600",
-    title: "Авто-тегирование диалогов",
-    description:
-      "Каждый диалог получает 3–5 тегов автоматически по теме и интенту. Поиск и фильтры становятся точными без ручного труда.",
-    preview: (
-      <div className="flex flex-wrap gap-1.5">
-        {["доставка", "срочно", "повторное обращение", "vip-клиент"].map((t) => (
-          <span
-            key={t}
-            className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700"
-          >
-            #{t}
-          </span>
-        ))}
-      </div>
-    ),
   },
   {
     icon: Lightbulb,
