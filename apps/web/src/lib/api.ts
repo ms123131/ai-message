@@ -190,8 +190,16 @@ export type MessageEntities = {
   phone?: string[];
   email?: string[];
   url?: string[];
+  social?: string[];
   tracking?: string[];
   money?: MoneyEntity[];
+  inn?: string[];
+  ogrn?: string[];
+  kpp?: string[];
+  account?: string[];
+  card?: string[];
+  iban?: string[];
+  date?: string[];
   person?: string[];
   location?: string[];
   organization?: string[];

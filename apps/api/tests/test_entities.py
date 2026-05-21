@@ -62,6 +62,91 @@ def test_extract_phone_bare_with_trailing_letter():
     assert out["phone"] == ["+79393956661"]
 
 
+def test_extract_phone_international():
+    text = "Call +1 415-555-2671 or +44 20 7946 0958"
+    out = _extract_regex(text)
+    assert "+14155552671" in out["phone"]
+    assert "+442079460958" in out["phone"]
+
+
+def test_extract_email_strips_trailing_dot():
+    out = _extract_regex("Спасибо, ответ на test@example.com.")
+    assert out["email"] == ["test@example.com"]
+
+
+def test_extract_social_handles():
+    out = _extract_regex("Пишите в телегу @sergei_ivanov или @ai_news_24")
+    assert "@sergei_ivanov" in out["social"]
+    assert "@ai_news_24" in out["social"]
+
+
+def test_social_does_not_match_email_handle():
+    # @ внутри email не должен попасть в social
+    out = _extract_regex("user@example.com")
+    assert "social" not in out
+    assert out["email"] == ["user@example.com"]
+
+
+def test_extract_inn():
+    out = _extract_regex("Компания ООО Тест, ИНН 7707083893, в работе.")
+    assert out["inn"] == ["7707083893"]
+
+
+def test_extract_inn_physical_12():
+    out = _extract_regex("ИНН ИП: 503005466213")
+    assert out["inn"] == ["503005466213"]
+
+
+def test_extract_ogrn():
+    out = _extract_regex("ОГРН 1027700132195 от 2002 года")
+    assert out["ogrn"] == ["1027700132195"]
+
+
+def test_extract_kpp():
+    out = _extract_regex("КПП: 770801001")
+    assert out["kpp"] == ["770801001"]
+
+
+def test_extract_account():
+    out = _extract_regex("р/с 40702810400000012345 в банке")
+    assert out["account"] == ["40702810400000012345"]
+
+
+def test_extract_card_luhn_valid_masked():
+    # Тестовый Visa-номер (Luhn-валидный)
+    out = _extract_regex("Карта: 4111 1111 1111 1111, спасибо")
+    assert out["card"] == ["**** **** **** 1111"]
+
+
+def test_extract_card_luhn_invalid_ignored():
+    out = _extract_regex("Артикул 1234 5678 9012 3456 в каталоге")
+    # Luhn не сходится — не считаем картой
+    assert "card" not in out
+
+
+def test_extract_iban():
+    out = _extract_regex("Перевод на DE89 3704 0044 0532 0130 00")
+    assert out["iban"] == ["DE89370400440532013000"]
+
+
+def test_extract_date():
+    out = _extract_regex("Доставка 15.03.2026, отправлено 2026-03-10")
+    assert "15.03.2026" in out["date"]
+    assert "2026-03-10" in out["date"]
+
+
+def test_extract_boxberry_tracking():
+    out = _extract_regex("Заказ выехал, трек BSP12345678")
+    assert "BSP12345678" in out["tracking"]
+
+
+def test_tracking_does_not_overlap_with_phone():
+    # 11-цифровой телефон не должен также попасть в tracking как 12-14-значное
+    out = _extract_regex("+79991234567")
+    assert "+79991234567" in out.get("phone", [])
+    assert out.get("tracking", []) == []
+
+
 def test_normalize_phone_handles_dashes():
     assert _normalize_phone("8-999-123-45-67") == "+79991234567"
     assert _normalize_phone("+7 999 123 4567") == "+79991234567"

@@ -1,4 +1,19 @@
-import { Mail, MapPin, Package, Phone, Building2, User, Banknote, Link as LinkIcon } from "lucide-react";
+import {
+  AtSign,
+  Banknote,
+  Building2,
+  Calendar,
+  CreditCard,
+  FileText,
+  Landmark,
+  Link as LinkIcon,
+  Mail,
+  MapPin,
+  Package,
+  Phone,
+  User,
+  Wallet,
+} from "lucide-react";
 
 import type { MessageEntities } from "../lib/api";
 
@@ -33,10 +48,59 @@ const DEFS: ChipDef[] = [
     href: (v) => (v.startsWith("http") ? v : `https://${v}`),
   },
   {
+    key: "social",
+    label: "соцсеть",
+    icon: AtSign,
+    className: "bg-cyan-50 text-cyan-700 hover:bg-cyan-100",
+    href: (v) => `https://t.me/${v.replace(/^@/, "")}`,
+  },
+  {
     key: "tracking",
     label: "трек",
     icon: Package,
     className: "bg-amber-50 text-amber-700 hover:bg-amber-100",
+  },
+  {
+    key: "inn",
+    label: "ИНН",
+    icon: FileText,
+    className: "bg-stone-100 text-stone-700 hover:bg-stone-200",
+  },
+  {
+    key: "ogrn",
+    label: "ОГРН",
+    icon: FileText,
+    className: "bg-stone-100 text-stone-700 hover:bg-stone-200",
+  },
+  {
+    key: "kpp",
+    label: "КПП",
+    icon: FileText,
+    className: "bg-stone-100 text-stone-700 hover:bg-stone-200",
+  },
+  {
+    key: "account",
+    label: "счёт",
+    icon: Landmark,
+    className: "bg-teal-50 text-teal-700 hover:bg-teal-100",
+  },
+  {
+    key: "card",
+    label: "карта",
+    icon: CreditCard,
+    className: "bg-red-50 text-red-700",
+  },
+  {
+    key: "iban",
+    label: "IBAN",
+    icon: Wallet,
+    className: "bg-teal-50 text-teal-700 hover:bg-teal-100",
+  },
+  {
+    key: "date",
+    label: "дата",
+    icon: Calendar,
+    className: "bg-yellow-50 text-yellow-700",
   },
   {
     key: "person",
