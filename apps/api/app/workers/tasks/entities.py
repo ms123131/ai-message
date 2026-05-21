@@ -9,10 +9,11 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import not_, or_, select
 
-from app.db.models import Conversation, Message
+from app.db.models import Conversation, Message, SenderType
 from app.db.session import AsyncSessionLocal
+from app.nlp.bitrix_system_text import SQL_LIKE_FRAGMENTS
 from app.nlp.entities import analyze_messages_entities_batch
 from app.workers.locks import portal_lock
 
@@ -46,6 +47,20 @@ async def analyze_entities_for_integration(
                     .where(
                         Conversation.integration_id == integration_id,
                         Message.entities.is_(None),
+                        # System-сообщения — служебные тексты Bitrix («начал
+                        # работу с диалогом», «Открытая линия»…). На них
+                        # Natasha матчит мусор, а пользы — ноль.
+                        Message.sender_type.in_(
+                            [SenderType.client, SenderType.agent]
+                        ),
+                        not_(
+                            or_(
+                                *[
+                                    Message.text.ilike(pattern)
+                                    for pattern in SQL_LIKE_FRAGMENTS
+                                ]
+                            )
+                        ),
                     )
                     .order_by(Message.sent_at.desc())
                     .limit(batch_size)
