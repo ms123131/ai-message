@@ -31,7 +31,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import Select, and_, case, desc, distinct, func, select
+from sqlalchemy import Select, and_, case, desc, distinct, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
@@ -52,6 +52,7 @@ from app.db.models import (
     Sentiment,
 )
 from app.db.models import User as UserModel
+from app.nlp.bitrix_system_text import SQL_LIKE_FRAGMENTS as _BITRIX_SYSTEM_LIKES
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -537,7 +538,7 @@ async def overview(
         return float(val) if val is not None else None
 
     async def sentiment_pending_in(start: datetime, end: datetime) -> int:
-        # Клиентские сообщения за окно без sentiment.
+        # Клиентские сообщения за окно без sentiment, исключая Bitrix-служебные.
         stmt = (
             select(func.count(Message.id))
             .join(Conversation, Conversation.id == Message.conversation_id)
@@ -547,6 +548,7 @@ async def overview(
                 Message.sent_at < end,
                 Message.sender_type == SenderType.client,
                 Message.sentiment.is_(None),
+                not_(or_(*[Message.text.ilike(p) for p in _BITRIX_SYSTEM_LIKES])),
             )
         )
         return int((await session.execute(stmt)).scalar_one() or 0)
@@ -943,11 +945,20 @@ async def heatmap(
     dialect = session.bind.dialect.name if session.bind else "postgresql"
 
     if dialect == "postgresql":
+        # БД хранит timestamptz в UTC. Чтобы heatmap показывал «час по местному
+        # времени», а не UTC-час, конвертируем через AT TIME ZONE с именем зоны
+        # из настроек (см. dashboard_tz). Без этого клиент в МСК, написавший
+        # в 9:00, попадал бы в ячейку 6:00.
+        from app.config import get_settings  # локальный импорт — избегаем циклов
+
+        tz_name = get_settings().dashboard_tz
+        local_ts = func.timezone(tz_name, Message.sent_at)
         # extract: dow → 0..6 (вс=0). Конвертируем в 0..6 (пн=0).
-        dow = ((func.extract("dow", Message.sent_at) + 6) % 7).label("wd")
-        hr = func.extract("hour", Message.sent_at).label("hr")
+        dow = ((func.extract("dow", local_ts) + 6) % 7).label("wd")
+        hr = func.extract("hour", local_ts).label("hr")
     else:
         # SQLite: strftime %w (вс=0); +6 mod 7 → пн=0.
+        # Конверсия по таймзоне на SQLite не делается — это путь только тестов.
         dow = (
             (func.cast(func.strftime("%w", Message.sent_at), type_=func.count.type) + 6)
             % 7
@@ -1234,13 +1245,49 @@ async def by_line(
         (ln.integration_id, ln.external_id): ln for ln in lines
     }
 
+    # Для линий без имени в PortalLine fallback на самый частый канал
+    # диалогов этой линии: «Telegram · линия #12» читается лучше, чем
+    # просто #12. Один запрос batch'ем для всех линий.
+    channel_stmt = (
+        select(
+            Conversation.integration_id,
+            Conversation.line_id,
+            Conversation.channel,
+            func.count(Conversation.id).label("c"),
+        )
+        .where(
+            *filters.conv_filters,
+            Conversation.line_id.is_not(None),
+            Conversation.created_at >= range_from,
+        )
+        .group_by(
+            Conversation.integration_id, Conversation.line_id, Conversation.channel
+        )
+    )
+    channel_winner: dict[tuple[str, str], ConversationChannel] = {}
+    best_count: dict[tuple[str, str], int] = {}
+    for intg, line, ch, cnt in (await session.execute(channel_stmt)).all():
+        key = (intg, line)
+        cnt_int = int(cnt or 0)
+        if cnt_int > best_count.get(key, -1):
+            best_count[key] = cnt_int
+            channel_winner[key] = ch
+
     result: list[LineRow] = []
     for r in rows:
         pl = line_index.get((r.integration_id, r.line_id))
+        name = pl.name if pl and pl.name else None
+        if not name:
+            ch = channel_winner.get((r.integration_id, r.line_id))
+            name = (
+                f"{_CHANNEL_LABEL.get(ch, ch.value if ch else 'Линия')} · #{r.line_id}"
+                if ch
+                else None
+            )
         result.append(
             LineRow(
                 line_id=r.line_id,
-                name=pl.name if pl else None,
+                name=name,
                 integration_id=r.integration_id,
                 conversations=int(r.convs or 0),
                 open_conversations=int(r.opens or 0),
@@ -1250,6 +1297,20 @@ async def by_line(
         )
     result.sort(key=lambda x: x.messages, reverse=True)
     return ByLineResponse(rows=result[:limit])
+
+
+# Локальные русские лейблы для fallback-имён линий. Дублируется с фронтом,
+# но фронту мы отдаём уже готовую строку.
+_CHANNEL_LABEL: dict[ConversationChannel, str] = {
+    ConversationChannel.whatsapp: "WhatsApp",
+    ConversationChannel.telegram: "Telegram",
+    ConversationChannel.vk: "ВКонтакте",
+    ConversationChannel.instagram: "Instagram",
+    ConversationChannel.facebook: "Facebook",
+    ConversationChannel.livechat: "Виджет сайта",
+    ConversationChannel.email: "Email",
+    ConversationChannel.other: "Линия",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -1429,6 +1490,9 @@ async def sentiment_breakdown(
         *filters.conv_filters,
         Message.sent_at >= range_from,
         Message.sender_type == SenderType.client,
+        # Исключаем Bitrix-служебные тексты — они не отражают настроение клиента
+        # и захламляют KPI (см. nlp/bitrix_system_text.py).
+        not_(or_(*[Message.text.ilike(p) for p in _BITRIX_SYSTEM_LIKES])),
     ]
 
     total = (

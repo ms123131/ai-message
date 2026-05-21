@@ -78,6 +78,7 @@ class ParsedMessageEvent:
     sender_type: SenderType
     channel: ConversationChannel
     connector_chat_id: str | None
+    line_id: str | None
     sent_at: datetime
     raw: dict[str, Any] = field(repr=False)
 
@@ -122,6 +123,17 @@ def parse_openlines_message(payload: dict[str, Any]) -> ParsedMessageEvent | Non
     connector_id = _g(flat, f"{p}[connector][connector_id]", f"{p}[CONNECTOR][CONNECTOR_ID]")
     connector_chat_id = _g(flat, f"{p}[connector][chat_id]", f"{p}[CONNECTOR][CHAT_ID]")
     connector_user_id = _g(flat, f"{p}[connector][user_id]", f"{p}[CONNECTOR][USER_ID]")
+    # `line_id` в payload вебхука — id открытой линии (CONFIG_ID). Без него
+    # Telegram-диалоги хранились с line_id=NULL и проваливались из «Топ
+    # открытых линий» на дашборде. Сессионный fallback (через session.history)
+    # не всегда отдаёт session-блок именно для коннекторов вроде telegram.
+    line_id = _g(
+        flat,
+        f"{p}[connector][line_id]",
+        f"{p}[CONNECTOR][LINE_ID]",
+        f"{p}[chat][line_id]",
+        f"{p}[CHAT][LINE_ID]",
+    )
 
     # Определяем тип отправителя:
     # - system=Y → системное сообщение от B24;
@@ -159,6 +171,7 @@ def parse_openlines_message(payload: dict[str, Any]) -> ParsedMessageEvent | Non
         sender_type=sender_type,
         channel=map_connector_to_channel(connector_id),
         connector_chat_id=connector_chat_id,
+        line_id=str(line_id) if line_id else None,
         sent_at=sent_at,
         raw=flat,
     )

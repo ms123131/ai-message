@@ -391,15 +391,21 @@ function RunAnalysisButton({
     },
     onSuccess: () => {
       setToast(
-        "Анализ запущен. Результаты появятся через минуту — страница обновится автоматически.",
+        "Анализ запущен. Результаты появятся за 10-60 секунд — страница обновится автоматически.",
       );
-      setTimeout(() => setToast(null), 6000);
-      // Обновим sentiment-данные через короткую задержку.
-      setTimeout(() => {
-        qc.invalidateQueries({ queryKey: ["dash-sentiment"] });
-        qc.invalidateQueries({ queryKey: ["dash-top-negative"] });
-        qc.invalidateQueries({ queryKey: ["dash-overview"] });
-      }, 3000);
+      setTimeout(() => setToast(null), 8000);
+      // Воркер может отрабатывать от нескольких секунд до минуты — особенно
+      // на первом запуске, когда сообщений много. Один invalidate через 3с
+      // часто ловит ещё пустое состояние, и пользователь думает, что не
+      // сработало. Поллим серией: 2, 6, 12, 20, 35, 55 сек после клика.
+      const intervals = [2000, 6000, 12000, 20000, 35000, 55000];
+      for (const ms of intervals) {
+        setTimeout(() => {
+          qc.invalidateQueries({ queryKey: ["dash-sentiment"] });
+          qc.invalidateQueries({ queryKey: ["dash-top-negative"] });
+          qc.invalidateQueries({ queryKey: ["dash-overview"] });
+        }, ms);
+      }
     },
     onError: (err: Error) => {
       setToast(`Не удалось запустить: ${err.message}`);

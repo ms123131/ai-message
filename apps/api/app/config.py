@@ -88,6 +88,12 @@ class Settings(BaseSettings):
     # время работы и не пустил параллельный заход.
     worker_portal_lock_ttl_sec: int = 600
 
+    # Таймзона для отображения временных метрик на дашборде (heatmap день/час).
+    # БД хранит timestamptz в UTC, но клиенту нужен «час, когда клиент написал
+    # по локальному времени», а не UTC-час. Имя зоны передаётся в Postgres
+    # `AT TIME ZONE`, поэтому формат — IANA tz-id (Europe/Moscow, UTC, ...).
+    dashboard_tz: str = "Europe/Moscow"
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
