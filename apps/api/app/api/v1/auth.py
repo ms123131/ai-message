@@ -67,13 +67,18 @@ class AuthResponse(BaseModel):
 
 
 def _set_refresh_cookie(response: Response, token: str) -> None:
+    from app.config import get_settings
+
     response.set_cookie(
         key=REFRESH_COOKIE,
         value=token,
         max_age=int(REFRESH_TTL.total_seconds()),
         httponly=True,
         samesite="lax",
-        secure=False,  # TODO: True в production за HTTPS
+        # Secure=True обязателен в production-HTTPS (cloudpub-туннель, прод-домен).
+        # Управляется через REFRESH_COOKIE_SECURE — на локальном HTTP оставляем
+        # False, чтобы браузер cookie вообще сохранил.
+        secure=get_settings().refresh_cookie_secure,
         path="/api/v1/auth",
     )
 

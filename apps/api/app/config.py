@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     # `AT TIME ZONE`, поэтому формат — IANA tz-id (Europe/Moscow, UTC, ...).
     dashboard_tz: str = "Europe/Moscow"
 
+    # Флаг Secure для refresh-cookie. На HTTPS-площадке должен быть True
+    # (Chrome/Safari отбрасывают/не шлют Lax-cookie без Secure при
+    # некоторых сценариях кросс-доменного редиректа cloudpub-туннеля).
+    # Локально на HTTP оставляем False, иначе браузер cookie не сохранит.
+    refresh_cookie_secure: bool = False
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
