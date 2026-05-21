@@ -154,6 +154,10 @@ export type Conversation = {
   created_at: string;
   updated_at: string;
   sentiment_score: number | null;
+  summary: string | null;
+  summary_at: string | null;
+  summary_model: string | null;
+  summary_messages_count: number | null;
 };
 
 export type ConversationListItem = Conversation & {
@@ -531,6 +535,12 @@ export const api = {
     ),
 
   getLLMStatus: () => request<LLMStatus>("/api/v1/system/llm-status"),
+
+  summarizeConversation: (conversationId: string) =>
+    request<{ status: string; job_id: string; conversation_id: string }>(
+      `/api/v1/conversations/${conversationId}/summarize`,
+      { method: "POST" },
+    ),
 
   getPortalUsers: (params: { integration_id?: string; only_active?: boolean } = {}) =>
     request<PortalUser[]>(

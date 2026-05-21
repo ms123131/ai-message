@@ -227,6 +227,14 @@ class Conversation(Base):
     # Пересчитывается после batch-анализа в `recompute_conversation_sentiment`.
     sentiment_score: Mapped[float | None] = mapped_column()
 
+    # LLM-резюме диалога (фаза 6.3). NULL = ещё не сгенерировано.
+    # summary_messages_count хранит число сообщений на момент генерации —
+    # сравнение с актуальным `len(messages)` даёт признак устаревания.
+    summary: Mapped[str | None] = mapped_column(Text)
+    summary_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    summary_model: Mapped[str | None] = mapped_column(String(100))
+    summary_messages_count: Mapped[int | None] = mapped_column(Integer)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

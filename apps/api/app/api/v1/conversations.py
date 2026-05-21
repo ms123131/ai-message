@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,6 +17,7 @@ from app.schemas.conversation import (
     ConversationOut,
     MessageOut,
 )
+from app.security.ratelimit import limiter
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
@@ -123,6 +124,34 @@ async def get_conversation(
     user: UserModel = Depends(get_current_user),
 ) -> Conversation:
     return await _get_owned_conv(session, conversation_id, user)
+
+
+@router.post(
+    "/{conversation_id}/summarize",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@limiter.limit("12/minute")
+async def trigger_summarize(
+    request: Request,  # noqa: ARG001 — нужен slowapi
+    conversation_id: str,
+    session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
+) -> dict[str, str]:
+    """Ставит LLM-резюме диалога в очередь. Smart-провайдер.
+
+    Лимит 12/мин — пользователь не должен иметь возможность спамить smart-LLM
+    кликами «Сводка» в Inbox. Это per-tenant лимит, не per-conversation.
+    """
+    from app.workers.redis_pool import get_pool
+
+    await _get_owned_conv(session, conversation_id, user)
+    pool = await get_pool()
+    job = await pool.enqueue_job("summarize_conversation_task", conversation_id)
+    return {
+        "status": "accepted",
+        "job_id": getattr(job, "job_id", "unknown"),
+        "conversation_id": conversation_id,
+    }
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageOut])

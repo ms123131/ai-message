@@ -1,7 +1,15 @@
 import { useEffect, useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
-import { AlertTriangle, Inbox, Loader2, Plug, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Inbox,
+  Loader2,
+  Plug,
+  RefreshCw,
+  Sparkles,
+  X,
+} from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/Button";
 import { SentimentBadge } from "../components/SentimentBadge";
@@ -366,23 +374,120 @@ function ConversationRow({
 }
 
 function ConversationView({ conv }: { conv: ConversationListItem }) {
+  const qc = useQueryClient();
   const messagesQ = useQuery({
     queryKey: ["messages", conv.id],
     queryFn: () => api.listMessages(conv.id, { limit: 500 }),
     refetchInterval: 10000,
   });
+  // Полная запись диалога — со свежим summary. Список диалогов не обновляется
+  // моментально после генерации, поэтому за summary ходим отдельно.
+  const conversationQ = useQuery({
+    queryKey: ["conversation", conv.id],
+    queryFn: () => api.getConversation(conv.id),
+    refetchInterval: 15000,
+  });
+  const llmStatusQ = useQuery({
+    queryKey: ["llm-status"],
+    queryFn: api.getLLMStatus,
+    staleTime: 60_000,
+  });
+
+  const detailed = conversationQ.data ?? conv;
+  const summary = detailed.summary;
+  const summaryCount = detailed.summary_messages_count;
+  const isStale =
+    summary !== null &&
+    summary !== undefined &&
+    summaryCount !== null &&
+    summaryCount !== undefined &&
+    conv.message_count > summaryCount;
+
+  const [toast, setToast] = useState<string | null>(null);
+  const summarizeMutation = useMutation({
+    mutationFn: () => api.summarizeConversation(conv.id),
+    onSuccess: () => {
+      setToast("Сводка генерируется. Появится через 5-15 секунд.");
+      setTimeout(() => setToast(null), 6000);
+      // Подтянем свежий conv через 4 и 10 секунд — smart-LLM небыстрая.
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["conversation", conv.id] });
+      }, 4000);
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["conversation", conv.id] });
+        qc.invalidateQueries({ queryKey: ["conversations"] });
+      }, 10000);
+    },
+    onError: (err: Error) => {
+      setToast(`Не удалось запустить: ${err.message}`);
+      setTimeout(() => setToast(null), 6000);
+    },
+  });
+
+  const smartReady = llmStatusQ.data?.smart_available ?? false;
+  const summarizeDisabled =
+    summarizeMutation.isPending ||
+    !smartReady ||
+    conv.message_count === 0;
+  const summarizeTitle = !smartReady
+    ? "Smart LLM-провайдер не настроен (LLM_SMART_*)"
+    : conv.message_count === 0
+      ? "В диалоге нет сообщений"
+      : undefined;
 
   return (
     <>
       <div className="border-b border-slate-200 bg-white px-6 py-4">
-        <div className="font-medium">
-          {conv.contact_name || conv.contact_external_id || "Без имени"}
-        </div>
-        <div className="text-xs text-slate-500">
-          Канал: {channelLabel[conv.channel]}
-          {conv.external_id && ` · #${conv.external_id}`}
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="font-medium">
+              {conv.contact_name || conv.contact_external_id || "Без имени"}
+            </div>
+            <div className="text-xs text-slate-500">
+              Канал: {channelLabel[conv.channel]}
+              {conv.external_id && ` · #${conv.external_id}`}
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <Button
+              onClick={() => summarizeMutation.mutate()}
+              disabled={summarizeDisabled}
+              title={summarizeTitle}
+              variant="secondary"
+            >
+              {summarizeMutation.isPending ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" /> Генерирую…
+                </>
+              ) : summary ? (
+                <>
+                  <RefreshCw className="h-4 w-4" /> Обновить сводку
+                </>
+              ) : (
+                <>
+                  <Sparkles className="h-4 w-4" /> Сводка
+                </>
+              )}
+            </Button>
+            {toast && (
+              <div
+                role="status"
+                className="max-w-xs rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-800"
+              >
+                {toast}
+              </div>
+            )}
+          </div>
         </div>
       </div>
+      {summary && (
+        <SummaryBlock
+          summary={summary}
+          model={detailed.summary_model ?? null}
+          summaryAt={detailed.summary_at ?? null}
+          isStale={isStale}
+        />
+      )}
       <div className="flex-1 space-y-3 overflow-y-auto p-6">
         {messagesQ.isLoading && (
           <div className="flex items-center gap-2 text-sm text-slate-500">
@@ -409,6 +514,53 @@ function ConversationView({ conv }: { conv: ConversationListItem }) {
         />
       </div>
     </>
+  );
+}
+
+function SummaryBlock({
+  summary,
+  model,
+  summaryAt,
+  isStale,
+}: {
+  summary: string;
+  model: string | null;
+  summaryAt: string | null;
+  isStale: boolean;
+}) {
+  const formattedAt = summaryAt
+    ? new Date(summaryAt).toLocaleString("ru-RU", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      })
+    : null;
+  return (
+    <div className="border-b border-slate-200 bg-gradient-to-br from-brand-50/60 via-white to-violet-50/40 px-6 py-3">
+      <div className="flex items-start gap-3">
+        <Sparkles className="mt-0.5 h-4 w-4 shrink-0 text-brand-600" />
+        <div className="min-w-0 flex-1">
+          <div className="mb-1 flex flex-wrap items-center gap-2 text-xs">
+            <span className="font-medium text-slate-700">AI-сводка</span>
+            {isStale && (
+              <span className="rounded bg-amber-100 px-1.5 py-0.5 font-medium text-amber-800">
+                устарела — есть новые сообщения
+              </span>
+            )}
+            {formattedAt && (
+              <span className="text-slate-400">
+                {formattedAt}
+                {model && ` · ${model}`}
+              </span>
+            )}
+          </div>
+          <div className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">
+            {summary}
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 

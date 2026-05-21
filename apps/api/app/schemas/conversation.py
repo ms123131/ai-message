@@ -31,6 +31,10 @@ class ConversationOut(BaseModel):
     created_at: datetime
     updated_at: datetime
     sentiment_score: float | None = None
+    summary: str | None = None
+    summary_at: datetime | None = None
+    summary_model: str | None = None
+    summary_messages_count: int | None = None
 
 
 class ConversationListItem(ConversationOut):
