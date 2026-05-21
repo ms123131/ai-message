@@ -17,6 +17,7 @@ class MessageOut(BaseModel):
     attachments: list[dict] | None = None
     sent_at: datetime
     tags: list[str] | None = None
+    entities: dict | None = None
 
 
 class ConversationOut(BaseModel):

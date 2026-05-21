@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/Button";
+import { EntityChips } from "../components/EntityChips";
 import { SentimentBadge } from "../components/SentimentBadge";
 import { cn } from "../lib/cn";
 import {
@@ -631,6 +632,7 @@ function MessageBubble({ message }: { message: Message }) {
         )}
       >
         <div className="whitespace-pre-wrap break-words">{message.text}</div>
+        {side === "them" && <EntityChips entities={message.entities} />}
         <div
           className={cn(
             "mt-1 text-[10px]",
