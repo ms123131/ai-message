@@ -1,9 +1,22 @@
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router-dom";
+import {
+  Cell,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+} from "recharts";
 import {
   AlertCircle,
   Bot,
+  CheckCircle2,
   Hash,
   Lightbulb,
+  Loader2,
   Lock,
+  Play,
   Smile,
   Sparkles,
   TrendingDown,
@@ -11,33 +24,431 @@ import {
   Wand2,
 } from "lucide-react";
 import { Button } from "../../components/ui/Button";
+import { SentimentBadge } from "../../components/SentimentBadge";
+import {
+  api,
+  type DashboardFilters,
+  type SentimentBucket,
+  type TopNegativeConversation,
+} from "../../lib/api";
+import { buildInboxLink } from "../../components/dashboard/inboxLink";
 
-/**
- * Phase 4Г — заглушки AI-аналитики.
- *
- * Карточки описывают, что появится в финальной версии. Реальные модели
- * (sentiment, BERTopic, LLM-резюмирование) добавим в фазе 6.
- */
+const SENTIMENT_COLORS: Record<SentimentBucket["sentiment"], string> = {
+  positive: "#10b981",
+  neutral: "#94a3b8",
+  negative: "#f43f5e",
+};
+const SENTIMENT_LABEL: Record<SentimentBucket["sentiment"], string> = {
+  positive: "Позитив",
+  neutral: "Нейтрально",
+  negative: "Негатив",
+};
+
+function fmtScore(v: number | null): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  const sign = v > 0 ? "+" : "";
+  return `${sign}${v.toFixed(2)}`;
+}
+
+function fmtCount(n: number): string {
+  return new Intl.NumberFormat("ru-RU").format(n);
+}
+
+export function AITab({ filters }: { filters: DashboardFilters }) {
+  return (
+    <div className="space-y-6">
+      <Hero />
+      <SentimentBlock filters={filters} />
+
+      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {LOCKED_FEATURES.map((f) => (
+          <FeatureCard key={f.title} {...f} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function Hero() {
+  return (
+    <div className="relative overflow-hidden rounded-xl border border-brand-200 bg-gradient-to-br from-brand-50 via-white to-violet-50 p-6">
+      <div className="flex items-start gap-4">
+        <div className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-white shadow-sm">
+          <Sparkles className="h-6 w-6 text-brand-600" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-semibold text-slate-900">
+            AI-аналитика
+          </h2>
+          <p className="mt-1 max-w-2xl text-sm text-slate-600">
+            Тональность диалогов уже доступна — запускайте анализ и смотрите,
+            какие клиенты остались недовольны. Остальные модели подключим в
+            ближайших обновлениях.
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sentiment-блок
+// ---------------------------------------------------------------------------
+
+function SentimentBlock({ filters }: { filters: DashboardFilters }) {
+  const sentimentQ = useQuery({
+    queryKey: ["dash-sentiment", filters],
+    queryFn: () => api.getDashboardSentiment(filters),
+    refetchInterval: 30_000,
+  });
+  const topNegativeQ = useQuery({
+    queryKey: ["dash-top-negative", filters],
+    queryFn: () => api.getDashboardTopNegative({ ...filters, limit: 10 }),
+    refetchInterval: 60_000,
+  });
+  const llmStatusQ = useQuery({
+    queryKey: ["llm-status"],
+    queryFn: api.getLLMStatus,
+    staleTime: 60_000,
+  });
+  const integrationsQ = useQuery({
+    queryKey: ["integrations"],
+    queryFn: api.listIntegrations,
+  });
+
+  const data = sentimentQ.data;
+  const integrations = integrationsQ.data ?? [];
+  const targetIntegrationId =
+    filters.integration_id ?? integrations[0]?.id ?? null;
+  const llmReady = llmStatusQ.data?.fast_available ?? false;
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-5">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-emerald-50 text-emerald-600">
+            <Smile className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="font-medium text-slate-800">
+              Тональность клиентов
+            </div>
+            <div className="text-xs text-slate-500">
+              Sentiment-разметка клиентских сообщений через LLM
+            </div>
+          </div>
+        </div>
+        <RunAnalysisButton
+          integrationId={targetIntegrationId}
+          llmReady={llmReady}
+          loading={llmStatusQ.isLoading}
+        />
+      </div>
+
+      {!llmStatusQ.isLoading && !llmReady && (
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <div className="font-medium">AI-функции отключены</div>
+            <div className="mt-0.5 text-amber-700">
+              Задайте <code className="font-mono">LLM_FAST_PROVIDER</code> и
+              <code className="font-mono"> LLM_FAST_API_KEY</code> в окружении
+              backend (см. <code className="font-mono">apps/api/.env.example</code>).
+              Без этого тональность не считается.
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
+        <div className="lg:col-span-1">
+          <DonutChart data={data?.buckets ?? []} loading={sentimentQ.isLoading} />
+          <KpiStrip data={data} loading={sentimentQ.isLoading} />
+        </div>
+        <div className="lg:col-span-2">
+          <TopNegativeList
+            items={topNegativeQ.data?.items ?? []}
+            loading={topNegativeQ.isLoading}
+            filters={filters}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function DonutChart({
+  data,
+  loading,
+}: {
+  data: SentimentBucket[];
+  loading?: boolean;
+}) {
+  if (loading) {
+    return (
+      <div className="flex h-[180px] items-center justify-center">
+        <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+      </div>
+    );
+  }
+  const total = data.reduce((s, b) => s + b.count, 0);
+  if (total === 0) {
+    return (
+      <div className="flex h-[180px] flex-col items-center justify-center gap-1 text-center text-xs text-slate-400">
+        <Smile className="h-6 w-6 text-slate-300" />
+        Пока нет проанализированных сообщений
+      </div>
+    );
+  }
+  return (
+    <ResponsiveContainer width="100%" height={180}>
+      <PieChart>
+        <Pie
+          data={data.map((b) => ({
+            name: SENTIMENT_LABEL[b.sentiment],
+            value: b.count,
+            sentiment: b.sentiment,
+          }))}
+          dataKey="value"
+          innerRadius={50}
+          outerRadius={75}
+          paddingAngle={2}
+          stroke="none"
+        >
+          {data.map((b) => (
+            <Cell
+              key={b.sentiment}
+              fill={SENTIMENT_COLORS[b.sentiment]}
+            />
+          ))}
+        </Pie>
+        <Tooltip
+          contentStyle={{
+            fontSize: 12,
+            borderRadius: 8,
+            border: "1px solid #e2e8f0",
+          }}
+          formatter={(v: number) => [`${v} сообщений`, "Кол-во"]}
+        />
+      </PieChart>
+    </ResponsiveContainer>
+  );
+}
+
+function KpiStrip({
+  data,
+  loading,
+}: {
+  data: { total_messages: number; analyzed_messages: number; pending_messages: number; avg_score: number | null } | undefined;
+  loading?: boolean;
+}) {
+  return (
+    <div className="mt-4 space-y-1.5 text-xs">
+      <Row
+        label="Клиентских сообщений"
+        value={loading ? "…" : fmtCount(data?.total_messages ?? 0)}
+      />
+      <Row
+        label="Проанализировано"
+        value={loading ? "…" : fmtCount(data?.analyzed_messages ?? 0)}
+      />
+      <Row
+        label="Ждут анализа"
+        value={loading ? "…" : fmtCount(data?.pending_messages ?? 0)}
+        muted={(data?.pending_messages ?? 0) === 0}
+      />
+      <Row
+        label="Среднее по диалогам"
+        value={loading ? "…" : fmtScore(data?.avg_score ?? null)}
+        bold
+      />
+    </div>
+  );
+}
+
+function Row({
+  label,
+  value,
+  muted,
+  bold,
+}: {
+  label: string;
+  value: string;
+  muted?: boolean;
+  bold?: boolean;
+}) {
+  return (
+    <div className="flex items-center justify-between">
+      <span className={muted ? "text-slate-400" : "text-slate-500"}>
+        {label}
+      </span>
+      <span
+        className={`tabular-nums ${bold ? "font-semibold text-slate-900" : "text-slate-700"}`}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function TopNegativeList({
+  items,
+  loading,
+  filters,
+}: {
+  items: TopNegativeConversation[];
+  loading?: boolean;
+  filters: DashboardFilters;
+}) {
+  return (
+    <div className="rounded-lg border border-slate-100 bg-slate-50 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <div className="text-sm font-medium text-slate-700">
+          Топ-10 негативных диалогов
+        </div>
+        <Link
+          to={
+            buildInboxLink(filters) +
+            (buildInboxLink(filters).includes("?") ? "&" : "?") +
+            "sentiment=negative"
+          }
+          className="text-xs text-brand-600 hover:underline"
+        >
+          смотреть все →
+        </Link>
+      </div>
+      {loading && (
+        <div className="flex h-[200px] items-center justify-center">
+          <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+        </div>
+      )}
+      {!loading && items.length === 0 && (
+        <div className="flex h-[200px] flex-col items-center justify-center gap-2 text-xs text-slate-400">
+          <CheckCircle2 className="h-6 w-6 text-emerald-400" />
+          Негативных диалогов нет — клиенты довольны
+        </div>
+      )}
+      {!loading && items.length > 0 && (
+        <ul className="divide-y divide-slate-200">
+          {items.map((it) => (
+            <li key={it.conversation_id} className="py-2">
+              <Link
+                to={buildInboxLink(filters, { conv: it.conversation_id })}
+                className="flex items-center gap-3 hover:bg-white/70 -mx-2 px-2 py-1 rounded"
+              >
+                <SentimentBadge
+                  score={it.sentiment_score}
+                  messageCount={it.message_count}
+                  size="lg"
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-slate-800">
+                    {it.contact_name ?? "Без имени"}
+                  </div>
+                  <div className="text-xs text-slate-500">
+                    {it.message_count} сообщений
+                  </div>
+                </div>
+                <div className="shrink-0 text-right">
+                  <div className="font-mono text-sm font-semibold tabular-nums text-rose-700">
+                    {fmtScore(it.sentiment_score)}
+                  </div>
+                </div>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function RunAnalysisButton({
+  integrationId,
+  llmReady,
+  loading,
+}: {
+  integrationId: string | null;
+  llmReady: boolean;
+  loading?: boolean;
+}) {
+  const qc = useQueryClient();
+  const [toast, setToast] = useState<string | null>(null);
+
+  const mutation = useMutation({
+    mutationFn: () => {
+      if (!integrationId)
+        return Promise.reject(new Error("Нет подключённой интеграции"));
+      return api.triggerSentimentAnalysis(integrationId);
+    },
+    onSuccess: () => {
+      setToast(
+        "Анализ запущен. Результаты появятся через минуту — страница обновится автоматически.",
+      );
+      setTimeout(() => setToast(null), 6000);
+      // Обновим sentiment-данные через короткую задержку.
+      setTimeout(() => {
+        qc.invalidateQueries({ queryKey: ["dash-sentiment"] });
+        qc.invalidateQueries({ queryKey: ["dash-top-negative"] });
+        qc.invalidateQueries({ queryKey: ["dash-overview"] });
+      }, 3000);
+    },
+    onError: (err: Error) => {
+      setToast(`Не удалось запустить: ${err.message}`);
+      setTimeout(() => setToast(null), 6000);
+    },
+  });
+
+  const disabled =
+    loading || !llmReady || !integrationId || mutation.isPending;
+  const title = !llmReady
+    ? "LLM-провайдер не настроен"
+    : !integrationId
+      ? "Нет подключённой интеграции"
+      : undefined;
+
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <Button
+        onClick={() => mutation.mutate()}
+        disabled={disabled}
+        title={title}
+      >
+        {mutation.isPending ? (
+          <>
+            <Loader2 className="h-4 w-4 animate-spin" /> Запускаю…
+          </>
+        ) : (
+          <>
+            <Play className="h-4 w-4" /> Запустить анализ
+          </>
+        )}
+      </Button>
+      {toast && (
+        <div
+          role="status"
+          className="max-w-xs rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-800"
+        >
+          {toast}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Прочие 7 lock-карточек — без изменений по содержанию
+// ---------------------------------------------------------------------------
 
 type Feature = {
   icon: typeof Sparkles;
   title: string;
   description: string;
   preview: React.ReactNode;
-  accent: string; // tailwind bg-* для иконки
+  accent: string;
 };
 
-const FEATURES: Feature[] = [
-  {
-    icon: Smile,
-    accent: "bg-emerald-50 text-emerald-600",
-    title: "Тональность диалогов",
-    description:
-      "Автоматическая разметка каждого диалога по эмоциональному фону: позитив, нейтрал, негатив. Динамика и тренды по периодам.",
-    preview: (
-      <SentimentPreview values={{ positive: 64, neutral: 27, negative: 9 }} />
-    ),
-  },
+const LOCKED_FEATURES: Feature[] = [
   {
     icon: Hash,
     accent: "bg-violet-50 text-violet-600",
@@ -63,9 +474,7 @@ const FEATURES: Feature[] = [
     description:
       "Мониторинг резких всплесков по темам и тональности. Уведомление, когда что-то идёт не так — до того, как заметит руководитель.",
     preview: (
-      <AnomalyPreview
-        text="Жалоб на «не приходит код» сегодня в 4× выше нормы"
-      />
+      <AnomalyPreview text="Жалоб на «не приходит код» сегодня в 4× выше нормы" />
     ),
   },
   {
@@ -106,16 +515,14 @@ const FEATURES: Feature[] = [
       "Каждый диалог получает 3–5 тегов автоматически по теме и интенту. Поиск и фильтры становятся точными без ручного труда.",
     preview: (
       <div className="flex flex-wrap gap-1.5">
-        {["доставка", "срочно", "повторное обращение", "vip-клиент"].map(
-          (t) => (
-            <span
-              key={t}
-              className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700"
-            >
-              #{t}
-            </span>
-          ),
-        )}
+        {["доставка", "срочно", "повторное обращение", "vip-клиент"].map((t) => (
+          <span
+            key={t}
+            className="rounded bg-slate-100 px-2 py-0.5 text-xs text-slate-700"
+          >
+            #{t}
+          </span>
+        ))}
       </div>
     ),
   },
@@ -144,56 +551,6 @@ const FEATURES: Feature[] = [
   },
 ];
 
-export function AITab() {
-  return (
-    <div className="space-y-6">
-      <div className="relative overflow-hidden rounded-xl border border-brand-200 bg-gradient-to-br from-brand-50 via-white to-violet-50 p-6">
-        <div className="flex items-start gap-4">
-          <div className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-white shadow-sm">
-            <Sparkles className="h-6 w-6 text-brand-600" />
-          </div>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h2 className="text-lg font-semibold text-slate-900">
-                AI-аналитика
-              </h2>
-              <span className="rounded-full bg-brand-600 px-2 py-0.5 text-xs font-medium text-white">
-                скоро
-              </span>
-            </div>
-            <p className="mt-1 max-w-2xl text-sm text-slate-600">
-              Восемь возможностей, которые превратят сырые цифры в действия:
-              автоматическая разметка тональности, выделение тем без
-              ручного тегирования, LLM-оценка качества и предсказание ухода
-              клиентов. Доступно в одном из ближайших обновлений.
-            </p>
-            <div className="mt-3 flex flex-wrap items-center gap-2">
-              <Button disabled className="cursor-not-allowed">
-                <Lock className="h-4 w-4" /> Подключить — скоро
-              </Button>
-              <span className="text-xs text-slate-500">
-                Хотите узнать первыми о запуске?{" "}
-                <a
-                  href="mailto:info@gitpro.pro?subject=AI-аналитика%20в%20ai-message"
-                  className="font-medium text-brand-700 hover:underline"
-                >
-                  Напишите нам
-                </a>
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {FEATURES.map((f) => (
-          <FeatureCard key={f.title} {...f} />
-        ))}
-      </div>
-    </div>
-  );
-}
-
 function FeatureCard({ icon: Icon, title, description, preview, accent }: Feature) {
   return (
     <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white p-5">
@@ -213,32 +570,6 @@ function FeatureCard({ icon: Icon, title, description, preview, accent }: Featur
       </div>
       <div className="mt-4 rounded-md border border-slate-100 bg-slate-50 p-3">
         {preview}
-      </div>
-    </div>
-  );
-}
-
-// --- Превью-блоки (имитация будущего UI) ---
-
-function SentimentPreview({
-  values,
-}: {
-  values: { positive: number; neutral: number; negative: number };
-}) {
-  return (
-    <div>
-      <div className="flex h-3 overflow-hidden rounded-full bg-slate-100">
-        <div
-          className="bg-emerald-500"
-          style={{ width: `${values.positive}%` }}
-        />
-        <div className="bg-slate-300" style={{ width: `${values.neutral}%` }} />
-        <div className="bg-rose-500" style={{ width: `${values.negative}%` }} />
-      </div>
-      <div className="mt-2 flex justify-between text-[11px] text-slate-500">
-        <span>😀 {values.positive}%</span>
-        <span>😐 {values.neutral}%</span>
-        <span>😞 {values.negative}%</span>
       </div>
     </div>
   );

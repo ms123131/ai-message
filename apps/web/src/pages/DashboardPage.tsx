@@ -117,15 +117,12 @@ export function DashboardPage() {
           ))}
         </div>
 
-        {/* Фильтры скрыты на AI-табе — фильтровать там пока нечего */}
-        {tab !== "ai" && (
-          <DashboardFilterBar value={filters} onChange={setFilters} />
-        )}
+        <DashboardFilterBar value={filters} onChange={setFilters} />
 
         {tab === "overview" && <OverviewTab filters={filters} />}
         {tab === "managers" && <ManagersTab filters={filters} />}
         {tab === "contacts" && <ContactsTab filters={filters} />}
-        {tab === "ai" && <AITab />}
+        {tab === "ai" && <AITab filters={filters} />}
       </div>
     </>
   );

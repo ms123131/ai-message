@@ -141,6 +141,8 @@ export type ConversationChannel =
 export type ConversationStatus = "open" | "closed";
 export type SenderType = "client" | "agent" | "bot" | "system";
 
+export type Sentiment = "positive" | "neutral" | "negative";
+
 export type Conversation = {
   id: string;
   integration_id: string;
@@ -151,6 +153,7 @@ export type Conversation = {
   status: ConversationStatus;
   created_at: string;
   updated_at: string;
+  sentiment_score: number | null;
 };
 
 export type ConversationListItem = Conversation & {
@@ -209,6 +212,39 @@ export type DashboardOverview = {
   avg_messages_per_conv: KPI;
   conversion_to_deal_pct: KPI;
   win_rate_pct: KPI;
+  sentiment_avg: number | null;
+  sentiment_avg_prev: number | null;
+  sentiment_pending_messages: number;
+};
+
+export type SentimentBucket = {
+  sentiment: Sentiment;
+  count: number;
+  share: number;
+};
+
+export type SentimentResponse = {
+  period_days: number;
+  total_messages: number;
+  analyzed_messages: number;
+  pending_messages: number;
+  buckets: SentimentBucket[];
+  avg_score: number | null;
+};
+
+export type TopNegativeConversation = {
+  conversation_id: string;
+  contact_name: string | null;
+  channel: ConversationChannel;
+  sentiment_score: number;
+  message_count: number;
+  last_message_at: string | null;
+};
+export type TopNegativeResponse = { items: TopNegativeConversation[] };
+
+export type LLMStatus = {
+  fast_available: boolean;
+  smart_available: boolean;
 };
 
 export type FunnelStage = {
@@ -436,6 +472,7 @@ export const api = {
     status?: "open" | "closed";
     operator_id?: string;
     line_id?: string;
+    sentiment?: Sentiment;
     limit?: number;
     offset?: number;
   } = {}) =>
@@ -478,6 +515,22 @@ export const api = {
 
   getDashboardFunnel: (f: DashboardFilters = {}) =>
     request<FunnelResponse>(`/api/v1/dashboard/funnel${qs(f)}`),
+
+  getDashboardSentiment: (f: DashboardFilters & { days?: number } = {}) =>
+    request<SentimentResponse>(`/api/v1/dashboard/sentiment${qs(f)}`),
+
+  getDashboardTopNegative: (f: DashboardFilters & { limit?: number } = {}) =>
+    request<TopNegativeResponse>(
+      `/api/v1/dashboard/top-negative-conversations${qs(f)}`,
+    ),
+
+  triggerSentimentAnalysis: (integrationId: string, batchSize = 200) =>
+    request<{ status: string; job_id: string; integration_id: string }>(
+      `/api/v1/integrations/${integrationId}/analyze-sentiment${qs({ batch_size: batchSize })}`,
+      { method: "POST" },
+    ),
+
+  getLLMStatus: () => request<LLMStatus>("/api/v1/system/llm-status"),
 
   getPortalUsers: (params: { integration_id?: string; only_active?: boolean } = {}) =>
     request<PortalUser[]>(
