@@ -251,6 +251,20 @@ export type LLMStatus = {
   smart_available: boolean;
 };
 
+export type TagBucket = {
+  tag: string;
+  count: number;
+  share: number;
+};
+
+export type TagsResponse = {
+  period_days: number;
+  total_messages: number;
+  analyzed_messages: number;
+  pending_messages: number;
+  buckets: TagBucket[];
+};
+
 export type FunnelStage = {
   key:
     | "conversations"
@@ -526,6 +540,15 @@ export const api = {
   getDashboardTopNegative: (f: DashboardFilters & { limit?: number } = {}) =>
     request<TopNegativeResponse>(
       `/api/v1/dashboard/top-negative-conversations${qs(f)}`,
+    ),
+
+  getDashboardTags: (f: DashboardFilters & { limit?: number } = {}) =>
+    request<TagsResponse>(`/api/v1/dashboard/tags${qs(f)}`),
+
+  triggerTagsAnalysis: (integrationId: string, batchSize = 200) =>
+    request<{ status: string; job_id: string; integration_id: string }>(
+      `/api/v1/integrations/${integrationId}/analyze-tags${qs({ batch_size: batchSize })}`,
+      { method: "POST" },
     ),
 
   triggerSentimentAnalysis: (integrationId: string, batchSize = 200) =>

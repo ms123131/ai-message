@@ -1591,6 +1591,122 @@ async def sentiment_breakdown(
 
 
 # ---------------------------------------------------------------------------
+# /tags — топ тем за период
+# ---------------------------------------------------------------------------
+
+
+class TagBucket(BaseModel):
+    tag: str
+    count: int
+    share: float = Field(description="Доля от общего числа протегированных сообщений")
+
+
+class TagsResponse(BaseModel):
+    period_days: int
+    total_messages: int = Field(description="Всего клиентских сообщений за период")
+    analyzed_messages: int = Field(description="Из них протегированы")
+    pending_messages: int = Field(description="Ещё ждут тегирования")
+    buckets: list[TagBucket]
+
+
+@router.get("/tags", response_model=TagsResponse)
+async def tags_breakdown(
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(20, ge=1, le=100),
+    filters: _Filters = Depends(_filters_dep),
+    session: AsyncSession = Depends(get_session),
+) -> TagsResponse:
+    """Распределение по темам за период.
+
+    Считаем клиентские сообщения (исключая Bitrix-служебные). Один сообщение
+    может попасть в несколько корзин — теги независимы. `share` — доля от
+    числа сообщений с хотя бы одним тегом.
+    """
+    range_from, _ = _window(days)
+    dialect = session.bind.dialect.name if session.bind else "postgresql"
+
+    base_filters = [
+        *filters.conv_filters,
+        Message.sent_at >= range_from,
+        Message.sender_type == SenderType.client,
+        not_(or_(*[Message.text.ilike(p) for p in _BITRIX_SYSTEM_LIKES])),
+    ]
+
+    # total — клиентских за окно (та же база, что у /sentiment).
+    total = (
+        await session.execute(
+            select(func.count(Message.id))
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*base_filters)
+        )
+    ).scalar() or 0
+
+    analyzed = (
+        await session.execute(
+            select(func.count(Message.id))
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*base_filters, Message.tags.is_not(None))
+        )
+    ).scalar() or 0
+
+    # Агрегация по тегам. Postgres — через jsonb_array_elements_text;
+    # SQLite (тесты) — итерируем в Python.
+    counts: dict[str, int] = {}
+    if dialect == "postgresql":
+        tag_expr = func.jsonb_array_elements_text(
+            func.cast(Message.tags, sa_postgresql_jsonb_type())
+        ).label("tag")
+        stmt = (
+            select(tag_expr, func.count().label("c"))
+            .select_from(Message)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*base_filters, Message.tags.is_not(None))
+            .group_by("tag")
+        )
+        for tag, cnt in (await session.execute(stmt)).all():
+            counts[str(tag)] = int(cnt or 0)
+    else:
+        # SQLite-fallback: тянем сами JSON-списки и считаем.
+        rows = (
+            await session.execute(
+                select(Message.tags)
+                .join(Conversation, Conversation.id == Message.conversation_id)
+                .where(*base_filters, Message.tags.is_not(None))
+            )
+        ).all()
+        for (tags_list,) in rows:
+            if not tags_list:
+                continue
+            for tag in tags_list:
+                counts[tag] = counts.get(tag, 0) + 1
+
+    # analyzed = число сообщений с тегами; для share используем именно его,
+    # не сумму счётчиков (одно сообщение может попасть в несколько корзин).
+    buckets = [
+        TagBucket(
+            tag=tag,
+            count=cnt,
+            share=(cnt / analyzed) if analyzed else 0.0,
+        )
+        for tag, cnt in sorted(counts.items(), key=lambda kv: kv[1], reverse=True)[:limit]
+    ]
+    return TagsResponse(
+        period_days=days,
+        total_messages=int(total),
+        analyzed_messages=int(analyzed),
+        pending_messages=int(total) - int(analyzed),
+        buckets=buckets,
+    )
+
+
+def sa_postgresql_jsonb_type():
+    """Локальный импорт-обёртка, чтобы не тащить postgresql-импорт в начало."""
+    from sqlalchemy.dialects.postgresql import JSONB
+
+    return JSONB
+
+
+# ---------------------------------------------------------------------------
 # /top-negative-conversations — топ диалогов с минимальным sentiment_score
 # ---------------------------------------------------------------------------
 

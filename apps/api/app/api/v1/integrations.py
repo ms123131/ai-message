@@ -384,6 +384,40 @@ async def trigger_sentiment_analysis(
 
 
 @router.post(
+    "/{integration_id}/analyze-tags",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@limiter.limit("6/minute")
+async def trigger_tags_analysis(
+    request: Request,  # noqa: ARG001 — нужен slowapi
+    integration_id: str,
+    batch_size: int = Query(200, ge=10, le=1000),
+    session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
+) -> dict[str, str]:
+    """Запускает батч авто-тегирования сообщений по словарю (фаза 6.2).
+
+    Один проход на до `batch_size` сообщений. Архитектура та же, что у
+    sentiment-эндпоинта; теги и sentiment могут выполняться параллельно
+    (разные локи) и не мешают друг другу.
+    """
+    from app.workers.redis_pool import get_pool
+
+    integration = await _get_owned(session, integration_id, user)
+    pool = await get_pool()
+    job = await pool.enqueue_job(
+        "analyze_tags_for_integration",
+        integration.id,
+        batch_size,
+    )
+    return {
+        "status": "accepted",
+        "job_id": getattr(job, "job_id", "unknown"),
+        "integration_id": integration.id,
+    }
+
+
+@router.post(
     "/{integration_id}/enrich-conversations",
     status_code=status.HTTP_202_ACCEPTED,
 )
