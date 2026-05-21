@@ -529,8 +529,12 @@ const TAG_PALETTE = [
   "#14b8a6",
 ];
 
-const TAGS_POLL_TIMEOUT_MS = 90_000;
+const TAGS_POLL_TIMEOUT_MS = 30_000;
 const TAGS_POLL_INTERVAL_MS = 3_000;
+// Минимум времени, который ждём перед тем, как заключить «новых сообщений
+// для тегирования нет». Worker должен успеть взять задачу из Redis и
+// сделать SELECT — обычно укладывается в 1-2 сек.
+const TAGS_NOOP_GRACE_MS = 4_000;
 
 function TagsBlock({ filters }: { filters: DashboardFilters }) {
   const qc = useQueryClient();
@@ -557,6 +561,7 @@ function TagsBlock({ filters }: { filters: DashboardFilters }) {
 
   const [analyzing, setAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
   const baselineRef = useRef<{ analyzed: number; pending: number } | null>(null);
 
   useEffect(() => {
@@ -576,11 +581,33 @@ function TagsBlock({ filters }: { filters: DashboardFilters }) {
           if (!cancelled) setAnalyzing(false);
           return;
         }
+        // Если pending был 0 на старте и остался 0 — таска отработала пустой,
+        // ждать роста счётчика бессмысленно. Останавливаемся после первого
+        // подтверждающего тика (~3 сек, чтобы worker успел enqueue→pop→run).
+        if (
+          baseline &&
+          baseline.pending === 0 &&
+          fresh.pending_messages === 0 &&
+          Date.now() - startedAt > TAGS_NOOP_GRACE_MS
+        ) {
+          if (!cancelled) {
+            setAnalyzing(false);
+            setInfo(
+              "Все сообщения уже обработаны — новых для тегирования нет.",
+            );
+          }
+          return;
+        }
       } catch {
         /* пропускаем */
       }
       if (Date.now() - startedAt > TAGS_POLL_TIMEOUT_MS) {
-        if (!cancelled) setAnalyzing(false);
+        if (!cancelled) {
+          setAnalyzing(false);
+          setInfo(
+            "Анализ запущен в фоне. Обновите страницу через минуту, чтобы увидеть результат.",
+          );
+        }
         return;
       }
       if (cancelled) return;
@@ -595,6 +622,7 @@ function TagsBlock({ filters }: { filters: DashboardFilters }) {
   const handleClick = async () => {
     if (!targetIntegrationId) return;
     setError(null);
+    setInfo(null);
     const cached = qc.getQueryData<TagsResponse>(["dash-tags", filters]);
     baselineRef.current = {
       analyzed: cached?.analyzed_messages ?? 0,
@@ -654,6 +682,11 @@ function TagsBlock({ filters }: { filters: DashboardFilters }) {
               className="max-w-xs rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700"
             >
               {error}
+            </div>
+          )}
+          {info && !error && (
+            <div className="max-w-xs rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
+              {info}
             </div>
           )}
         </div>
