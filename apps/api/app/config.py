@@ -100,6 +100,20 @@ class Settings(BaseSettings):
     # Локально на HTTP оставляем False, иначе браузер cookie не сохранит.
     refresh_cookie_secure: bool = False
 
+    # Словарь тем для авто-тегирования сообщений (фаза 6.2). Comma-separated
+    # slugs на русском. Меняется без редеплоя через env. Динамическое
+    # обновление из топ-N кластеров (BERTopic, фаза 6.4) — позже.
+    tags_vocabulary: str = (
+        "оплата,доставка,возврат,жалоба,гарантия,"
+        "вопрос_о_товаре,техподдержка,статус_заказа,другое"
+    )
+
+    # Cron-интервал авто-анализа sentiment/tags (фаза 6.1). Воркер каждые
+    # N минут проходит по connected-интеграциям и ставит батч-задачи.
+    # 0 = отключено (ручной триггер). Минимум 1.
+    nlp_cron_interval_minutes: int = 0
+    nlp_cron_batch_size: int = 200
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

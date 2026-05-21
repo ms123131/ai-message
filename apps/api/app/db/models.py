@@ -319,6 +319,12 @@ class Message(Base):
     sentiment_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     sentiment_model: Mapped[str | None] = mapped_column(String(100))
 
+    # Авто-теги темы (фаза 6.2). Список slug'ов из словаря портала,
+    # см. app/nlp/tags.py. NULL = ещё не обработано. Список из 0-3 элементов.
+    tags: Mapped[list[str] | None] = mapped_column(SAJSON)
+    tags_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    tags_model: Mapped[str | None] = mapped_column(String(100))
+
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
 
     __table_args__ = (
@@ -331,6 +337,14 @@ class Message(Base):
             "sent_at",
             postgresql_where=sql_text("sentiment IS NULL"),
             sqlite_where=sql_text("sentiment IS NULL"),
+        ),
+        # Аналогичный частичный индекс для tags-воркера.
+        Index(
+            "ix_messages_tags_pending",
+            "conversation_id",
+            "sent_at",
+            postgresql_where=sql_text("tags IS NULL"),
+            sqlite_where=sql_text("tags IS NULL"),
         ),
         Index(
             "uq_messages_conversation_external",
