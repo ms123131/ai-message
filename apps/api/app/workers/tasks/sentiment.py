@@ -44,7 +44,10 @@ async def analyze_sentiment_for_integration(
     мы не хотим, чтобы одна интеграция бесконечно блокировала очередь.
     """
     pool = ctx["redis"]
-    async with portal_lock(pool, integration_id) as got:
+    # ttl=600с: один проход обычно укладывается в 1-2 минуты даже на тысячи
+    # сообщений, но LLM-провайдер может тормозить. kind=sentiment, чтобы не
+    # конфликтовать с poll-локом для той же интеграции.
+    async with portal_lock(pool, integration_id, ttl_sec=600, kind="sentiment") as got:
         if not got:
             logger.info(
                 "sentiment: лок интеграции %s занят, пропускаем", integration_id
