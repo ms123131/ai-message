@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { AlertTriangle, Inbox, Loader2, Plug, X } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/Button";
+import { SentimentBadge } from "../components/SentimentBadge";
 import { cn } from "../lib/cn";
 import {
   api,
@@ -11,6 +12,7 @@ import {
   type ConversationChannel,
   type Message,
   type SenderType,
+  type Sentiment,
 } from "../lib/api";
 
 const channelLabel: Record<ConversationChannel, string> = {
@@ -34,6 +36,12 @@ const channelBadge: Record<ConversationChannel, string> = {
   email: "bg-amber-100 text-amber-700",
   other: "bg-slate-100 text-slate-600",
 };
+
+function sentimentChipLabel(s: Sentiment): string {
+  if (s === "positive") return "Позитив";
+  if (s === "negative") return "Негатив";
+  return "Нейтрально";
+}
 
 function formatTime(iso: string | null | undefined): string {
   if (!iso) return "";
@@ -61,6 +69,8 @@ export function InboxPage() {
         (searchParams.get("status") as "open" | "closed" | null) ?? undefined,
       operator_id: searchParams.get("operator_id") ?? undefined,
       line_id: searchParams.get("line_id") ?? undefined,
+      sentiment:
+        (searchParams.get("sentiment") as Sentiment | null) ?? undefined,
     }),
     [searchParams],
   );
@@ -119,6 +129,7 @@ export function InboxPage() {
       "status",
       "operator_id",
       "line_id",
+      "sentiment",
       "conv",
     ].forEach((k) => params.delete(k));
     setSearchParams(params, { replace: true });
@@ -216,12 +227,36 @@ export function InboxPage() {
               onRemove={() => clearFilter("line_id")}
             />
           )}
+          {filters.sentiment && (
+            <FilterChip
+              label="Тональность"
+              value={sentimentChipLabel(filters.sentiment)}
+              onRemove={() => clearFilter("sentiment")}
+            />
+          )}
           <button
             type="button"
             onClick={clearAllFilters}
             className="ml-auto text-xs text-slate-500 hover:text-slate-800 hover:underline"
           >
             сбросить все
+          </button>
+        </div>
+      )}
+      {!filters.sentiment && (
+        <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-6 py-2 text-xs">
+          <span className="text-slate-400">Быстрый фильтр:</span>
+          <button
+            type="button"
+            onClick={() => {
+              const p = new URLSearchParams(searchParams);
+              p.set("sentiment", "negative");
+              setSearchParams(p, { replace: true });
+            }}
+            className="inline-flex items-center gap-1.5 rounded-full border border-rose-200 bg-rose-50 px-2.5 py-0.5 text-rose-700 transition hover:border-rose-300 hover:bg-rose-100"
+          >
+            <span className="inline-block h-2 w-2 rounded-full bg-rose-500" />
+            Только негатив
           </button>
         </div>
       )}
@@ -288,10 +323,16 @@ function ConversationRow({
       )}
     >
       <div className="flex items-start justify-between gap-2">
-        <div className="truncate font-medium text-sm">
-          {conv.contact_name || conv.contact_external_id || "Без имени"}
+        <div className="flex min-w-0 items-center gap-1.5">
+          <SentimentBadge
+            score={conv.sentiment_score}
+            messageCount={conv.message_count}
+          />
+          <div className="truncate font-medium text-sm">
+            {conv.contact_name || conv.contact_external_id || "Без имени"}
+          </div>
         </div>
-        <div className="text-xs text-slate-400">
+        <div className="shrink-0 text-xs text-slate-400">
           {formatTime(conv.last_message_at ?? conv.created_at)}
         </div>
       </div>

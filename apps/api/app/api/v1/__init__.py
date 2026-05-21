@@ -8,6 +8,7 @@ from app.api.v1 import (
     install,
     integrations,
     sla_targets,
+    system,
     webhooks,
 )
 
@@ -20,3 +21,4 @@ api_router.include_router(dashboard.router)
 api_router.include_router(sla_targets.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(install.router)
+api_router.include_router(system.router)

@@ -142,6 +142,11 @@ class OverviewResponse(BaseModel):
     # Конверсия в CRM (фаза 5Е — CRM-минимум). Считаются по диалогам в окне.
     conversion_to_deal_pct: KPI  # % диалогов с привязанной сделкой
     win_rate_pct: KPI  # won / (won+lost) среди связанных сделок
+    # Sentiment (фаза 6.1.1). Не KPI: при отсутствии данных нужен честный None,
+    # а не нулевая дельта. Фронт считает разницу сам.
+    sentiment_avg: float | None = None  # среднее по Conversation.sentiment_score
+    sentiment_avg_prev: float | None = None
+    sentiment_pending_messages: int = 0  # клиентских сообщений ждут анализа
 
 
 class DayPoint(BaseModel):
@@ -521,6 +526,35 @@ async def overview(
     cur_win = await win_rate(range_from, range_to)
     prev_win = await win_rate(prev_from, prev_to)
 
+    async def sentiment_avg_in(start: datetime, end: datetime) -> float | None:
+        stmt = select(func.avg(Conversation.sentiment_score)).where(
+            *filters.conv_filters,
+            Conversation.created_at >= start,
+            Conversation.created_at < end,
+            Conversation.sentiment_score.is_not(None),
+        )
+        val = (await session.execute(stmt)).scalar_one_or_none()
+        return float(val) if val is not None else None
+
+    async def sentiment_pending_in(start: datetime, end: datetime) -> int:
+        # Клиентские сообщения за окно без sentiment.
+        stmt = (
+            select(func.count(Message.id))
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(
+                *filters.conv_filters,
+                Message.sent_at >= start,
+                Message.sent_at < end,
+                Message.sender_type == SenderType.client,
+                Message.sentiment.is_(None),
+            )
+        )
+        return int((await session.execute(stmt)).scalar_one() or 0)
+
+    cur_sent_avg = await sentiment_avg_in(range_from, range_to)
+    prev_sent_avg = await sentiment_avg_in(prev_from, prev_to)
+    sent_pending = await sentiment_pending_in(range_from, range_to)
+
     avg_now = cur_msgs / cur_convs if cur_convs else 0.0
     avg_prev = prev_msgs / prev_convs if prev_convs else 0.0
 
@@ -540,6 +574,9 @@ async def overview(
         avg_messages_per_conv=_kpi(avg_now, avg_prev),
         conversion_to_deal_pct=_kpi(cur_conv_deal, prev_conv_deal),
         win_rate_pct=_kpi(cur_win, prev_win),
+        sentiment_avg=cur_sent_avg,
+        sentiment_avg_prev=prev_sent_avg,
+        sentiment_pending_messages=sent_pending,
     )
 
 
@@ -1443,6 +1480,75 @@ async def sentiment_breakdown(
         buckets=buckets,
         avg_score=float(avg) if avg is not None else None,
     )
+
+
+# ---------------------------------------------------------------------------
+# /top-negative-conversations — топ диалогов с минимальным sentiment_score
+# ---------------------------------------------------------------------------
+
+
+class TopNegativeConversation(BaseModel):
+    conversation_id: str
+    contact_name: str | None
+    channel: ConversationChannel
+    sentiment_score: float
+    message_count: int
+    last_message_at: datetime | None
+
+
+class TopNegativeResponse(BaseModel):
+    items: list[TopNegativeConversation]
+
+
+@router.get(
+    "/top-negative-conversations", response_model=TopNegativeResponse
+)
+async def top_negative_conversations(
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(10, ge=1, le=50),
+    filters: _Filters = Depends(_filters_dep),
+    session: AsyncSession = Depends(get_session),
+) -> TopNegativeResponse:
+    """Топ диалогов с наименьшим sentiment_score за период.
+
+    Берём только проанализированные диалоги (sentiment_score IS NOT NULL).
+    Сортируем по score ASC: самые негативные — первыми.
+    """
+    range_from, _ = _window(days)
+
+    msg_agg = (
+        select(
+            Message.conversation_id.label("conv_id"),
+            func.count(Message.id).label("cnt"),
+            func.max(Message.sent_at).label("last_at"),
+        )
+        .group_by(Message.conversation_id)
+        .subquery()
+    )
+    stmt = (
+        select(Conversation, msg_agg.c.cnt, msg_agg.c.last_at)
+        .outerjoin(msg_agg, msg_agg.c.conv_id == Conversation.id)
+        .where(
+            *filters.conv_filters,
+            Conversation.sentiment_score.is_not(None),
+            Conversation.created_at >= range_from,
+        )
+        .order_by(Conversation.sentiment_score.asc())
+        .limit(limit)
+    )
+    rows = (await session.execute(stmt)).all()
+    items = [
+        TopNegativeConversation(
+            conversation_id=conv.id,
+            contact_name=conv.contact_name,
+            channel=conv.channel,
+            sentiment_score=float(conv.sentiment_score),
+            message_count=int(cnt or 0),
+            last_message_at=last_at,
+        )
+        for conv, cnt, last_at in rows
+    ]
+    return TopNegativeResponse(items=items)
 
 
 # ---------------------------------------------------------------------------

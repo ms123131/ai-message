@@ -12,7 +12,15 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import { AlertTriangle, Clock, Loader2, Radio } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowDownRight,
+  ArrowUpRight,
+  Clock,
+  Loader2,
+  Minus,
+  Radio,
+} from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, type ConversationChannel, type DashboardFilters } from "../../lib/api";
 import { KPICard } from "../../components/dashboard/KPICard";
@@ -167,6 +175,12 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
             format="percent"
             loading={overviewQ.isLoading}
             hint="% с более чем одним обращением"
+          />
+          <SentimentKPICard
+            avg={o?.sentiment_avg ?? null}
+            prev={o?.sentiment_avg_prev ?? null}
+            pending={o?.sentiment_pending_messages ?? 0}
+            loading={overviewQ.isLoading}
           />
         </div>
       </Section>
@@ -338,6 +352,83 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
             filters={filters}
           />
         </Card>
+      </div>
+    </div>
+  );
+}
+
+function formatSentimentScore(v: number | null): string {
+  if (v === null || v === undefined || Number.isNaN(v)) return "—";
+  const sign = v > 0 ? "+" : v < 0 ? "" : "";
+  return `${sign}${v.toFixed(2)}`;
+}
+
+function SentimentKPICard({
+  avg,
+  prev,
+  pending,
+  loading,
+}: {
+  avg: number | null;
+  prev: number | null;
+  pending: number;
+  loading?: boolean;
+}) {
+  const tone =
+    avg === null ? "unknown" : avg > 0.2 ? "pos" : avg < -0.2 ? "neg" : "neu";
+  const valueColor =
+    tone === "pos"
+      ? "text-emerald-600"
+      : tone === "neg"
+        ? "text-rose-600"
+        : tone === "neu"
+          ? "text-slate-700"
+          : "text-slate-400";
+
+  const delta =
+    avg !== null && prev !== null ? avg - prev : null;
+  let TrendIcon = Minus;
+  let trendColor = "text-slate-400";
+  let trendText = "—";
+  if (delta !== null && Number.isFinite(delta)) {
+    if (delta > 0.05) {
+      TrendIcon = ArrowUpRight;
+      trendColor = "text-emerald-600";
+    } else if (delta < -0.05) {
+      TrendIcon = ArrowDownRight;
+      trendColor = "text-rose-600";
+    }
+    const sign = delta > 0 ? "+" : "";
+    trendText = `${sign}${delta.toFixed(2)}`;
+  }
+
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-5">
+      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
+        Средняя тональность
+      </div>
+      <div className="mt-2 flex items-baseline justify-between gap-2">
+        <div className={`text-2xl font-semibold tabular-nums ${valueColor}`}>
+          {loading ? (
+            <span className="text-slate-300">…</span>
+          ) : (
+            formatSentimentScore(avg)
+          )}
+        </div>
+        <div
+          className={`inline-flex items-center gap-0.5 text-xs font-medium ${trendColor}`}
+          title="изменение к предыдущему периоду"
+        >
+          <TrendIcon className="h-3.5 w-3.5" />
+          {trendText}
+        </div>
+      </div>
+      <div className="mt-1 text-xs text-slate-400">
+        {avg === null
+          ? "нет проанализированных диалогов"
+          : pending > 0
+            ? `${fmtNumber(pending)} сообщений ещё анализируется`
+            : "среднее по клиентским сообщениям, шкала −1…+1"}
       </div>
     </div>
   );

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -18,6 +20,10 @@ from app.schemas.conversation import (
 
 router = APIRouter(prefix="/conversations", tags=["conversations"])
 
+# Порог тональности — согласован с фронтом (SentimentBadge): score за пределами
+# ±SENTIMENT_THRESHOLD трактуется как positive/negative, между — neutral.
+SENTIMENT_THRESHOLD = 0.2
+
 
 @router.get("", response_model=list[ConversationListItem])
 async def list_conversations(
@@ -26,6 +32,7 @@ async def list_conversations(
     status_: str | None = Query(None, alias="status"),
     operator_id: str | None = None,
     line_id: str | None = None,
+    sentiment: Literal["positive", "neutral", "negative"] | None = None,
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     session: AsyncSession = Depends(get_session),
@@ -59,6 +66,15 @@ async def list_conversations(
         stmt = stmt.where(Conversation.assigned_user_id == operator_id)
     if line_id:
         stmt = stmt.where(Conversation.line_id == line_id)
+    if sentiment == "negative":
+        stmt = stmt.where(Conversation.sentiment_score < -SENTIMENT_THRESHOLD)
+    elif sentiment == "positive":
+        stmt = stmt.where(Conversation.sentiment_score > SENTIMENT_THRESHOLD)
+    elif sentiment == "neutral":
+        stmt = stmt.where(
+            Conversation.sentiment_score >= -SENTIMENT_THRESHOLD,
+            Conversation.sentiment_score <= SENTIMENT_THRESHOLD,
+        )
 
     rows = (await session.execute(stmt)).all()
     if not rows:
