@@ -17,7 +17,7 @@ from sqlalchemy import not_, or_, select
 from app.db.models import Conversation, Message, SenderType
 from app.db.session import AsyncSessionLocal
 from app.nlp.bitrix_system_text import SQL_LIKE_FRAGMENTS
-from app.nlp.tags import analyze_messages_tags_batch
+from app.nlp.tags import analyze_messages_tags_batch, recompute_conversation_tags
 from app.workers.locks import portal_lock
 
 logger = logging.getLogger(__name__)
@@ -68,11 +68,34 @@ async def analyze_tags_for_integration(
                 return {"processed_messages": 0}
 
             processed = await analyze_messages_tags_batch(session, list(ids))
+
+            # Пересчитываем денормализованные теги у затронутых диалогов —
+            # бэйджи в Inbox и фильтр по теме читают Conversation.tags
+            # напрямую, без агрегата по сообщениям на каждый запрос.
+            conv_ids = (
+                await session.execute(
+                    select(Message.conversation_id)
+                    .where(
+                        Message.id.in_(list(ids)),
+                        Message.tags.is_not(None),
+                    )
+                    .distinct()
+                )
+            ).scalars().all()
+            for cid in conv_ids:
+                await recompute_conversation_tags(session, cid)
+
             await session.commit()
             logger.info(
-                "tags: integration=%s processed=%d", integration_id, processed
+                "tags: integration=%s processed=%d conversations_updated=%d",
+                integration_id,
+                processed,
+                len(conv_ids),
             )
-            return {"processed_messages": processed}
+            return {
+                "processed_messages": processed,
+                "updated_conversations": len(conv_ids),
+            }
 
 
 __all__ = ["analyze_tags_for_integration"]

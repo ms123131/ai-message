@@ -22,7 +22,12 @@ from app.db.models import (
 )
 from app.db.session import AsyncSessionLocal
 from app.integrations.llm.base import LLMResponse
-from app.nlp.tags import _parse_tags, analyze_messages_tags_batch, get_vocabulary
+from app.nlp.tags import (
+    _parse_tags,
+    analyze_messages_tags_batch,
+    get_vocabulary,
+    recompute_conversation_tags,
+)
 
 # ---------------------------------------------------------------------------
 # _parse_tags — unit
@@ -140,8 +145,13 @@ async def with_fake_fast(monkeypatch):
     return fake
 
 
-async def _seed_messages(tenant_id: str, texts: list[tuple[str, SenderType]]):
-    """Возвращает (integration_id, [message_ids])."""
+async def _seed_messages(
+    tenant_id: str,
+    texts: list[tuple[str, SenderType]],
+    return_conv: bool = False,
+):
+    """Возвращает (integration_id, [message_ids]) либо
+    (integration_id, conv_id, [message_ids]) при return_conv=True."""
     integration_id = f"intg_tags_{secrets.token_urlsafe(3)}"
     conv_id = f"cnv_tags_{secrets.token_urlsafe(3)}"
     now = datetime.now(UTC)
@@ -180,6 +190,8 @@ async def _seed_messages(tenant_id: str, texts: list[tuple[str, SenderType]]):
                 )
             )
         await session.commit()
+    if return_conv:
+        return integration_id, conv_id, msg_ids
     return integration_id, msg_ids
 
 
@@ -280,3 +292,82 @@ async def test_dashboard_tags_aggregates(client, auth_tenant_id, with_fake_fast)
     assert by_tag["жалоба"]["count"] == 1
     # share по analyzed (4)
     assert by_tag["доставка"]["share"] == pytest.approx(0.25)
+
+
+# ---------------------------------------------------------------------------
+# recompute_conversation_tags — денормализация на уровне диалога
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_recompute_conversation_tags_unions_client_messages(
+    client, auth_tenant_id, with_fake_fast
+):
+    _, conv_id, msg_ids = await _seed_messages(
+        auth_tenant_id,
+        [
+            ("Не пришёл заказ, что делать?", SenderType.client),
+            ("Хочу вернуть товар", SenderType.client),
+            # Сообщение оператора не должно влиять, даже если есть теги
+            ("Оплатил, но не списались деньги", SenderType.agent),
+        ],
+        return_conv=True,
+    )
+    async with AsyncSessionLocal() as session:
+        await analyze_messages_tags_batch(session, msg_ids)
+        result = await recompute_conversation_tags(session, conv_id)
+        await session.commit()
+
+    # Только клиентские сообщения: доставка, статус_заказа, возврат, жалоба
+    assert result == sorted(["доставка", "статус_заказа", "возврат", "жалоба"])
+
+    async with AsyncSessionLocal() as session:
+        conv = await session.get(Conversation, conv_id)
+        assert conv.tags == sorted([
+            "доставка",
+            "статус_заказа",
+            "возврат",
+            "жалоба",
+        ])
+
+
+@pytest.mark.asyncio
+async def test_recompute_conversation_tags_returns_none_when_unanalyzed(
+    client, auth_tenant_id
+):
+    _, conv_id, _ = await _seed_messages(
+        auth_tenant_id,
+        [("текст без анализа", SenderType.client)],
+        return_conv=True,
+    )
+    async with AsyncSessionLocal() as session:
+        result = await recompute_conversation_tags(session, conv_id)
+        await session.commit()
+    assert result is None
+    async with AsyncSessionLocal() as session:
+        conv = await session.get(Conversation, conv_id)
+        assert conv.tags is None
+
+
+@pytest.mark.asyncio
+async def test_conversation_list_exposes_tags(
+    client, auth_tenant_id, with_fake_fast
+):
+    integration_id, conv_id, msg_ids = await _seed_messages(
+        auth_tenant_id,
+        [("Не пришёл заказ, что делать?", SenderType.client)],
+        return_conv=True,
+    )
+    async with AsyncSessionLocal() as session:
+        await analyze_messages_tags_batch(session, msg_ids)
+        await recompute_conversation_tags(session, conv_id)
+        await session.commit()
+
+    resp = await client.get(
+        f"/api/v1/conversations?integration_id={integration_id}"
+    )
+    assert resp.status_code == 200, resp.text
+    items = resp.json()
+    assert items
+    target = next(i for i in items if i["id"] == conv_id)
+    assert sorted(target["tags"]) == sorted(["доставка", "статус_заказа"])

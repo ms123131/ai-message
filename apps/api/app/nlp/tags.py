@@ -20,11 +20,11 @@ import logging
 import re
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import Message
+from app.db.models import Conversation, Message, SenderType
 from app.integrations.llm import LLMError, LLMMessage, get_llm
 
 logger = logging.getLogger(__name__)
@@ -160,3 +160,36 @@ async def analyze_messages_tags_batch(
         msg.tags_model = model
         processed += 1
     return processed
+
+
+async def recompute_conversation_tags(
+    session: AsyncSession,
+    conversation_id: str,
+) -> list[str] | None:
+    """Пересчитывает Conversation.tags как уникальный набор тегов клиентских
+    сообщений диалога. Возвращает итоговый список (отсортированный) или None,
+    если ни одно клиентское сообщение ещё не тегировано. Не коммитит.
+    """
+    rows = (
+        await session.execute(
+            select(Message.tags).where(
+                Message.conversation_id == conversation_id,
+                Message.sender_type == SenderType.client,
+                Message.tags.is_not(None),
+            )
+        )
+    ).all()
+    if not rows:
+        return None
+
+    merged: set[str] = set()
+    for (tags_list,) in rows:
+        if tags_list:
+            merged.update(tags_list)
+    result = sorted(merged)
+    await session.execute(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(tags=result)
+    )
+    return result

@@ -154,6 +154,7 @@ export type Conversation = {
   created_at: string;
   updated_at: string;
   sentiment_score: number | null;
+  tags: string[] | null;
   summary: string | null;
   summary_at: string | null;
   summary_model: string | null;
@@ -175,6 +176,7 @@ export type Message = {
   text: string | null;
   attachments: Array<Record<string, unknown>> | null;
   sent_at: string;
+  tags: string[] | null;
 };
 
 export type DashboardStats = {
