@@ -179,7 +179,7 @@ SaaS-приложение для анализа коммуникационных
 | 6.1.1 Sentiment UI | ✅ | бэйджи в Inbox, donut+top-negative, фильтр-чип |
 | 6.2 LLM-теги | ✅ | словарь 41 темы, Conversation.tags денормализация, чипы #тема в Inbox |
 | 6.3 LLM-резюме | ✅ | smart-LLM, кнопка «Сводка» в Inbox, индикатор устаревания |
-| 6.6 Извлечение сущностей | ✅ | Natasha NER + регулярки (phone/email/url/tracking/money), EntityChips |
+| 6.6 Извлечение сущностей | ✅ | 14 типов: phone (RU+intl), email, url, @social, tracking, money, ИНН/ОГРН/КПП/счёт, card (маскир.+Luhn), IBAN, date + Natasha NER (person/loc/org). EntityChips в Inbox |
 | 6.4 BERTopic | ⏳ | динамические темы поверх эмбеддингов |
 | 6.5 Эмбеддинги + pgvector | ⏳ | семантический поиск похожих диалогов |
 | 6.7 Weekly insights + аномалии + AI Control Panel | ⏳ | smart-LLM, детекторы всплесков, единая страница |
@@ -276,30 +276,42 @@ per-message раскраска в просмотре диалога.
 - [ ] pgvector + ivfflat индекс, эндпоинт «семантический поиск похожих»
 - [ ] Кнопка «найти похожие диалоги» в Inbox
 
-### 6.6 Извлечение сущностей ✅ (commit `94bf3c9`)
+### 6.6 Извлечение сущностей ✅ (commits `94bf3c9`, `a9d91d1`, `acfef0a`, `1283db7`)
 
 Локальный NER без LLM — Natasha + регулярки. Дешёвый и быстрый сток
-контактов и упоминаний.
+контактов, реквизитов и упоминаний.
 
 - [x] `Message.{entities, entities_at}` (JSON) + миграция 0009 +
   частичный индекс `ix_messages_entities_pending`
-- [x] `app/nlp/entities.py`:
-  - Регулярки: телефон (нормализация в `+7XXX…`), email, URL,
-    трек-номер (EMS/UPS/СДЭК/DHL-like), денежная сумма с валютой
-    (RUB/USD/EUR/KZT/UAH) — нормализация в `{amount, currency, raw}`
-  - Natasha NER (lazy-init, один раз на процесс ~150мб моделей):
+- [x] `app/nlp/entities.py`. Полная палитра типов:
+  - **Контакты:** телефон RU + международные E.164 (нормализация в
+    `+XXX...`), email (trailing-пунктуация обрезается), URL,
+    `@social_handle` (Telegram-ссылка по клику)
+  - **Логистика:** tracking — EMS/UPS/Boxberry (BSP/BB)/СДЭК/DHL/DPD;
+    дедупликация с phone/inn/account, чтобы длинные цифры не задваивались
+  - **Деньги:** сумма с валютой RUB/USD/EUR/KZT/UAH → `{amount, currency, raw}`
+  - **Реквизиты юрлица** (по контекстному хинту): ИНН (10/12),
+    ОГРН/ОГРНИП (13/15), КПП (9), расчётный счёт (20)
+  - **Платёжные:** банковская карта с Luhn-валидацией —
+    маскируется в `**** **** **** XXXX` (полный PAN никогда не
+    сохраняется); IBAN (15-34 alphanumeric)
+  - **Дата:** DD.MM.YYYY, DD/MM/YYYY, DD-MM-YYYY, YYYY-MM-DD
+  - **Natasha NER** (lazy-init, один раз на процесс ~150мб моделей):
     `person` / `location` / `organization`. Опциональна — если пакет
     не установлен, регулярки продолжают работать
 - [x] Worker `analyze_entities_for_integration` под локом `kind=entities`.
-  Обрабатывает сообщения всех `sender_type` (контакт оператора нужен тоже)
+  Обрабатывает client + agent, исключает system-сообщения Bitrix
+  (фикс a9d91d1 — там Natasha матчила служебные слова как мусор)
 - [x] `POST /api/v1/integrations/{id}/analyze-entities`
 - [x] `nlp_dispatch_cron` теперь ставит и entities-задачу
 - [x] `MessageOut.entities` в API
-- [x] `EntityChips` в Inbox под клиентским сообщением: цветные
-  кликабельные чипы (телефон → `tel:`, email → `mailto:`, url → новая
-  вкладка); деньги форматируются по локали
-- [x] Тесты: 16 кейсов (regex unit, money parser, batch+БД, endpoint,
-  natasha stub без реальных моделей)
+- [x] `EntityChips` в Inbox под bubble (client + agent) — цветные
+  кликабельные чипы с иконками lucide-react; phone → `tel:`,
+  email → `mailto:`, url → новая вкладка, @social → `t.me/...`;
+  деньги форматируются по локали `ru-RU`
+- [x] Тесты: 32 кейса (regex unit для всех типов, Luhn, money parser,
+  дедупликация bucket'ов, batch+БД, endpoint, natasha stub без
+  реальных моделей)
 
 Что НЕ сделано в этой итерации (намеренно):
 - Фильтр в Inbox «есть телефон/email/трек» — поле в БД готово, UI-чип
@@ -307,6 +319,9 @@ per-message раскраска в просмотре диалога.
 - Дашборд-блок «топ упомянутых сумм/городов/компаний» — уйдёт в 6.7
 - Авто-обогащение CRM Bitrix24 контактами из чата — отдельная фича,
   решить, в какие поля писать
+- Полнотекстовый поиск по entities (`messages.entities->>'phone'`) —
+  есть GIN-индекс на JSONB по умолчанию, отдельный API эндпоинт
+  «найти все диалоги с этим телефоном» — позже
 
 ### 6.7 Weekly insights и аномалии
 - [ ] smart-провайдер раз в неделю собирает overview + outlier-диалоги
