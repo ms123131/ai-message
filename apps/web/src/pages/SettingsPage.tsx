@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2 } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
+import { Skeleton } from "../components/ui/Skeleton";
 import { api } from "../lib/api";
 
 export function SettingsPage() {
@@ -27,11 +28,9 @@ export function SettingsPage() {
             AI-провайдеры
           </div>
           {llmStatusQ.isLoading && (
-            <div className="text-xs text-slate-400">Проверяю доступность…</div>
-          )}
-          {llmStatusQ.isError && (
-            <div className="text-xs text-rose-600">
-              Не удалось получить статус: {(llmStatusQ.error as Error).message}
+            <div className="space-y-2">
+              <Skeleton className="h-5 w-3/4" />
+              <Skeleton className="h-5 w-2/3" />
             </div>
           )}
           {llmStatusQ.isSuccess && (

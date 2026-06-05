@@ -71,6 +71,9 @@ export function Bitrix24Wizard() {
       qc.invalidateQueries({ queryKey: ["integrations"] });
       navigate("/integrations");
     },
+    // 404 not_installed показываем в виде кастомного блока с инструкцией,
+    // остальные ошибки — inline под кнопкой. В обоих случаях toast лишний.
+    meta: { silent: true },
   });
 
   const apiError = connect.error as ApiError | undefined;

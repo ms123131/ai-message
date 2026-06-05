@@ -2,7 +2,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link, useSearchParams } from "react-router-dom";
 import {
-  AlertTriangle,
   Inbox,
   Loader2,
   Plug,
@@ -13,6 +12,8 @@ import {
 } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/Button";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Skeleton, SkeletonText } from "../components/ui/Skeleton";
 import { EntityChips } from "../components/EntityChips";
 import { SentimentBadge } from "../components/SentimentBadge";
 import { cn } from "../lib/cn";
@@ -177,16 +178,19 @@ export function InboxPage() {
     return (
       <>
         <PageHeader title="Диалоги" />
-        <EmptyState
-          icon={<Plug className="h-6 w-6 text-brand-600" />}
-          title="Нет подключённых источников"
-          description="Подключите Bitrix24 — здесь появятся диалоги из открытых линий."
-          action={
-            <Link to="/integrations/bitrix24/new">
-              <Button>Подключить Bitrix24</Button>
-            </Link>
-          }
-        />
+        <div className="flex h-[calc(100%-77px)] items-center justify-center">
+          <EmptyState
+            icon={Plug}
+            title="Нет подключённых источников"
+            description="Подключите Bitrix24 — здесь появятся диалоги из открытых линий."
+            action={
+              <Link to="/integrations/bitrix24/new">
+                <Button>Подключить Bitrix24</Button>
+              </Link>
+            }
+            size="lg"
+          />
+        </div>
       </>
     );
   }
@@ -273,21 +277,25 @@ export function InboxPage() {
       <div className="grid h-[calc(100%-77px)] grid-cols-[360px_1fr]">
         <div className="overflow-y-auto border-r border-slate-200 bg-white">
           {conversationsQ.isLoading && (
-            <div className="flex items-center gap-2 p-5 text-sm text-slate-500">
-              <Loader2 className="h-4 w-4 animate-spin" /> Загрузка диалогов…
+            <div className="space-y-3 p-4">
+              {Array.from({ length: 6 }).map((_, i) => (
+                <div key={i} className="flex gap-3">
+                  <Skeleton variant="circle" className="h-9 w-9 shrink-0" />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-3.5 w-1/2" />
+                    <Skeleton className="h-3 w-3/4" />
+                  </div>
+                </div>
+              ))}
             </div>
-          )}
-          {conversationsQ.isError && (
-            <ErrorRow message={(conversationsQ.error as Error).message} />
           )}
           {conversationsQ.isSuccess && conversations.length === 0 && (
-            <div className="p-8 text-center text-sm text-slate-500">
-              <Inbox className="mx-auto mb-3 h-8 w-8 text-slate-300" />
-              Пока нет ни одного сообщения.
-              <br />
-              Они появятся, как только в подключённый портал придёт первое
-              событие.
-            </div>
+            <EmptyState
+              icon={Inbox}
+              title="Пока нет ни одного сообщения"
+              description="Они появятся, как только в подключённый портал придёт первое событие."
+              size="md"
+            />
           )}
           {conversations.map((c) => (
             <ConversationRow
@@ -534,17 +542,27 @@ function ConversationView({ conv }: { conv: ConversationListItem }) {
 
       <div className="flex-1 space-y-3 overflow-y-auto p-6">
         {messagesQ.isLoading && (
-          <div className="flex items-center gap-2 text-sm text-slate-500">
-            <Loader2 className="h-4 w-4 animate-spin" /> Загрузка сообщений…
+          <div className="space-y-4">
+            {Array.from({ length: 4 }).map((_, i) => (
+              <div
+                key={i}
+                className={cn(
+                  "max-w-[70%] rounded-2xl bg-white p-3 shadow-sm",
+                  i % 2 === 1 ? "ml-auto" : "",
+                )}
+              >
+                <SkeletonText lines={2} />
+              </div>
+            ))}
           </div>
-        )}
-        {messagesQ.isError && (
-          <ErrorRow message={(messagesQ.error as Error).message} />
         )}
         {messagesQ.data?.length === 0 && (
-          <div className="text-center text-sm text-slate-400">
-            Сообщений ещё нет
-          </div>
+          <EmptyState
+            icon={Inbox}
+            title="Сообщений ещё нет"
+            description="Они появятся, когда клиент напишет в эту линию."
+            size="sm"
+          />
         )}
         {messagesQ.data?.map((m) => (
           <MessageBubble key={m.id} message={m} />
@@ -615,6 +633,7 @@ function SimilarBlock({ conversationId }: { conversationId: string }) {
     queryFn: () => api.listSimilarConversations(conversationId, 10),
     enabled: open,
     staleTime: 60_000,
+    meta: { silent: true },
   });
 
   return (
@@ -738,40 +757,6 @@ function Center({ children }: { children: React.ReactNode }) {
   return (
     <div className="flex h-[calc(100%-77px)] items-center justify-center">
       {children}
-    </div>
-  );
-}
-
-function EmptyState({
-  icon,
-  title,
-  description,
-  action,
-}: {
-  icon: React.ReactNode;
-  title: string;
-  description: string;
-  action?: React.ReactNode;
-}) {
-  return (
-    <div className="flex h-[calc(100%-77px)] items-center justify-center p-8">
-      <div className="max-w-md text-center">
-        <div className="mx-auto mb-4 grid h-12 w-12 place-items-center rounded-full bg-brand-50">
-          {icon}
-        </div>
-        <h3 className="text-lg font-semibold text-slate-800">{title}</h3>
-        <p className="mt-2 text-sm text-slate-500">{description}</p>
-        {action && <div className="mt-5">{action}</div>}
-      </div>
-    </div>
-  );
-}
-
-function ErrorRow({ message }: { message: string }) {
-  return (
-    <div className="m-4 flex items-start gap-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-      <AlertTriangle className="h-4 w-4 shrink-0" />
-      <span>Ошибка загрузки: {message}</span>
     </div>
   );
 }
