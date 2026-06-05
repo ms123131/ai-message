@@ -225,57 +225,30 @@ async def list_similar_conversations(
     if dialect != "postgresql":
         return {"available": False, "items": []}
 
-    # Центроид. Считаем в Python: вытащить векторы исходного диалога и
-    # усреднить. На больших диалогах (>200 сообщений) можно было бы делать
-    # это в БД через AVG(embedding), но pgvector агрегата нет — только
-    # сторонний `vector_avg`, не во всех версиях. Дешевле и переноснее
-    # сделать на стороне приложения.
-    src_embeddings = (
-        await session.execute(
-            select(Message.embedding)
-            .where(
-                Message.conversation_id == conversation_id,
-                Message.embedding.is_not(None),
-            )
-        )
-    ).scalars().all()
-    if not src_embeddings:
+    # Берём денормализованный центроид (фаза 7.4) — воркер
+    # `embed_messages_for_integration` пересчитывает его после батча.
+    src_conv = await session.get(Conversation, conversation_id)
+    if src_conv is None or not src_conv.embedding_centroid:
         return {"available": True, "items": [], "reason": "no_embeddings"}
-
-    # pgvector возвращает list[float] через адаптер. Если из БД пришла
-    # строка ('[0.1,0.2,...]') — pgvector её распарсил.
-    n = 0
-    centroid: list[float] | None = None
-    for vec in src_embeddings:
-        if not vec:
-            continue
-        if centroid is None:
-            centroid = list(vec)
-        else:
-            for i, v in enumerate(vec):
-                centroid[i] += v
-        n += 1
-    if not centroid or n == 0:
-        return {"available": True, "items": [], "reason": "no_embeddings"}
-    centroid = [v / n for v in centroid]
+    centroid = list(src_conv.embedding_centroid)
 
     # Сериализуем вектор в строковый литерал pgvector: '[v1,v2,...]'.
     # Так избегаем зависимости от регистрации asyncpg-codec'а в сессии.
     centroid_str = "[" + ",".join(f"{v:.6f}" for v in centroid) + "]"
 
-    # MIN(distance) per conversation: один хорошо ложащийся вектор уже
-    # значит, что диалог тематически близок. Исключаем исходный диалог.
+    # Запрос напрямую по центроидам диалогов — одна строка на диалог,
+    # ivfflat-индекс ix_conversations_centroid_cosine ускоряет top-K.
+    # Раньше тут был MIN(distance) GROUP BY conversation_id по messages —
+    # это давало seq-scan на > 100k сообщений.
     sql = text(
         """
         SELECT c.id AS conv_id,
-               MIN(m.embedding <=> CAST(:centroid AS vector)) AS distance
-          FROM messages m
-          JOIN conversations c ON c.id = m.conversation_id
-          JOIN integrations i  ON i.id = c.integration_id
+               c.embedding_centroid <=> CAST(:centroid AS vector) AS distance
+          FROM conversations c
+          JOIN integrations i ON i.id = c.integration_id
          WHERE i.tenant_id = :tenant_id
            AND c.id <> :conv_id
-           AND m.embedding IS NOT NULL
-         GROUP BY c.id
+           AND c.embedding_centroid IS NOT NULL
          ORDER BY distance ASC
          LIMIT :lim
         """

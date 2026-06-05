@@ -24,7 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import get_settings
-from app.db.models import Message
+from app.db.models import Conversation, Message
 from app.db.types import EMBEDDING_DIM
 
 logger = logging.getLogger(__name__)
@@ -162,12 +162,69 @@ async def analyze_messages_embeddings_batch(
 
     now = datetime.now(UTC)
     model_name = _model_state.get("name") or settings.embeddings_model
+    touched_conv_ids: set[str] = set()
     for msg, vec in zip(pending, vectors, strict=True):
         msg.embedding = vec
         msg.embedding_at = now
         msg.embedding_model = model_name
+        touched_conv_ids.add(msg.conversation_id)
+
+    # Денормализуем центроид: для каждого затронутого диалога считаем
+    # AVG по всем не-нулевым embedding'ам его сообщений. Так /similar
+    # сможет работать одной SQL-операцией без python-цикла.
+    if touched_conv_ids:
+        await _recompute_conversation_centroids(
+            session, list(touched_conv_ids), now=now
+        )
 
     return written_empty + len(pending)
+
+
+async def _recompute_conversation_centroids(
+    session: AsyncSession,
+    conv_ids: list[str],
+    *,
+    now: datetime,
+) -> None:
+    """Пересчитывает Conversation.embedding_centroid для каждого conv_id.
+
+    Центроид считаем в Python (не AVG в SQL): на PG `vector` не имеет
+    нативного AVG-агрегата без extension'а, а на SQLite поле = JSON.
+    Один SELECT за все сообщения каждого conv'а — компромисс между
+    точностью и стоимостью.
+    """
+    for conv_id in conv_ids:
+        vecs = (
+            await session.execute(
+                select(Message.embedding)
+                .where(
+                    Message.conversation_id == conv_id,
+                    Message.embedding.is_not(None),
+                )
+            )
+        ).scalars().all()
+        if not vecs:
+            continue
+        n = 0
+        centroid: list[float] | None = None
+        for vec in vecs:
+            if vec is None:
+                continue
+            if centroid is None:
+                centroid = list(vec)
+            else:
+                for i, v in enumerate(vec):
+                    centroid[i] += v
+            n += 1
+        if not centroid or n == 0:
+            continue
+        centroid = [v / n for v in centroid]
+
+        conv = await session.get(Conversation, conv_id)
+        if conv is None:
+            continue
+        conv.embedding_centroid = centroid
+        conv.embedding_centroid_at = now
 
 
 __all__ = [

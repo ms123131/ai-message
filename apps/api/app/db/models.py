@@ -255,6 +255,18 @@ class Conversation(Base):
     summary_model: Mapped[str | None] = mapped_column(String(100))
     summary_messages_count: Mapped[int | None] = mapped_column(Integer)
 
+    # Денормализованный центроид эмбеддингов сообщений диалога (фаза 7.4).
+    # На Postgres — pgvector(384); ivfflat cosine-индекс на колонке (см.
+    # миграция 0012). Используется в `/conversations/{id}/similar` —
+    # одна строка вместо N в /similar-запросе. Пересчитывается воркером
+    # `embed_messages_for_integration` после батча новых эмбеддингов.
+    embedding_centroid: Mapped[list[float] | None] = mapped_column(
+        EmbeddingVector
+    )
+    embedding_centroid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

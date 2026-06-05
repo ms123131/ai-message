@@ -183,6 +183,34 @@ async def test_analyze_embeddings_endpoint_enqueues(
 
 
 @pytest.mark.asyncio
+async def test_batch_recomputes_conversation_centroid(
+    client, auth_tenant_id, monkeypatch
+):
+    """После батча эмбеддингов воркер должен заполнить
+    Conversation.embedding_centroid средним по всем сообщениям диалога."""
+    monkeypatch.setattr(emb_mod, "encode_batch", _stub_encode)
+
+    _, conv_id, msg_ids = await _seed_messages(
+        auth_tenant_id,
+        [
+            ("Первое сообщение клиента", SenderType.client),
+            ("Ответ оператора", SenderType.agent),
+        ],
+    )
+
+    async with AsyncSessionLocal() as session:
+        await analyze_messages_embeddings_batch(session, msg_ids)
+        await session.commit()
+
+    async with AsyncSessionLocal() as session:
+        conv = await session.get(Conversation, conv_id)
+        assert conv is not None
+        assert conv.embedding_centroid is not None
+        assert len(conv.embedding_centroid) == EMBEDDING_DIM
+        assert conv.embedding_centroid_at is not None
+
+
+@pytest.mark.asyncio
 async def test_similar_endpoint_graceful_on_sqlite(client, auth_tenant_id):
     """На SQLite (тестовая БД) pgvector недоступен — эндпоинт должен
     отдавать available=False, а не падать с 500."""
