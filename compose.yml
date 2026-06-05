@@ -49,10 +49,16 @@ services:
   migrate:
     # One-shot контейнер: применяет миграции Alembic и выходит.
     # api ждёт его успешного завершения через service_completed_successfully.
-    build:
-      context: ./apps/api
-      dockerfile: Dockerfile
+    # ВАЖНО: используем образ ai-message-api:local — общий с api/worker.
+    # Compose сам соберёт его при первом старте, дальше все три сервиса
+    # переиспользуют один образ (3 ГБ вместо 9 ГБ + нет тройной пересборки
+    # при изменении кода). `pull_policy: build` гарантирует, что при
+    # отсутствии образа Compose сделает build по правилам api-сервиса.
+    image: ai-message-api:local
+    pull_policy: build
     command: ["run-migrations"]
+    healthcheck:
+      disable: true
     restart: "no"
     depends_on:
       postgres:
@@ -66,6 +72,10 @@ services:
     build:
       context: ./apps/api
       dockerfile: Dockerfile
+    # Фиксированный тег — общий для api/worker/migrate. Один build даёт
+    # образ для всех трёх сервисов (см. соответствующие `image:` ниже),
+    # вместо трёх независимых ai-message-{api,worker,migrate}:latest по 3 ГБ.
+    image: ai-message-api:local
     restart: unless-stopped
     depends_on:
       postgres:
@@ -100,10 +110,15 @@ services:
     # Воркер фоновых задач (arq). Тот же образ, что и api, но другой
     # entrypoint: `run-worker` → `arq app.workers.settings.WorkerSettings`.
     # Берёт DATABASE_URL/REDIS_URL/Bitrix-секреты из тех же env, что и api.
-    build:
-      context: ./apps/api
-      dockerfile: Dockerfile
+    # Использует общий образ ai-message-api:local (см. сервис api).
+    image: ai-message-api:local
+    pull_policy: build
     command: ["run-worker"]
+    # Дефолтный healthcheck из Dockerfile проверяет /api/v1/health на
+    # порту 8000 — это работает для api, но worker HTTP-сервер не
+    # поднимает. Отключаем, чтобы статус не висел unhealthy.
+    healthcheck:
+      disable: true
     restart: unless-stopped
     depends_on:
       postgres:
