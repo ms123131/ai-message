@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import get_settings
 from app.db import get_session
 from app.db.models import Conversation, ConversationStatus, Integration, Message
 from app.integrations.bitrix24.events import (
@@ -179,8 +180,25 @@ async def bitrix24_webhook(
             integration.id,
             parsed.chat_id,
         )
+
+        # Realtime NLP: на каждое новое клиентское сообщение сразу ставим
+        # 4 анализа на батч интеграции. Лок per-integration+kind внутри
+        # обработчиков схлопывает пачку сообщений в один прогон (debounce).
+        # Cron каждые 5 мин остаётся safety net для пропущенных задач.
+        # System/agent сообщения не анализируем — это не источник тем/сентимента.
+        from app.db.models import SenderType
+
+        if parsed.sender_type == SenderType.client:
+            batch_size = get_settings().nlp_cron_batch_size
+            for task_name in (
+                "analyze_sentiment_for_integration",
+                "analyze_tags_for_integration",
+                "analyze_entities_for_integration",
+                "embed_messages_for_integration",
+            ):
+                await pool.enqueue_job(task_name, integration.id, batch_size)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("failed to enqueue enrich for chat %s: %s", parsed.chat_id, exc)
+        logger.warning("failed to enqueue post-ingest tasks for chat %s: %s", parsed.chat_id, exc)
 
     return {
         "status": "accepted",

@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import {
   Cell,
@@ -15,21 +14,18 @@ import {
   Lightbulb,
   Loader2,
   Lock,
-  Play,
   Smile,
   Sparkles,
   TrendingDown,
   TrendingUp,
   Wand2,
 } from "lucide-react";
-import { Button } from "../../components/ui/Button";
 import { SentimentBadge } from "../../components/SentimentBadge";
 import {
   api,
   type DashboardFilters,
   type SentimentBucket,
   type TagBucket,
-  type TagsResponse,
   type TopNegativeConversation,
 } from "../../lib/api";
 import { buildInboxLink } from "../../components/dashboard/inboxLink";
@@ -114,15 +110,8 @@ function SentimentBlock({ filters }: { filters: DashboardFilters }) {
     queryFn: api.getLLMStatus,
     staleTime: 60_000,
   });
-  const integrationsQ = useQuery({
-    queryKey: ["integrations"],
-    queryFn: api.listIntegrations,
-  });
 
   const data = sentimentQ.data;
-  const integrations = integrationsQ.data ?? [];
-  const targetIntegrationId =
-    filters.integration_id ?? integrations[0]?.id ?? null;
   const llmReady = llmStatusQ.data?.fast_available ?? false;
 
   return (
@@ -141,11 +130,9 @@ function SentimentBlock({ filters }: { filters: DashboardFilters }) {
             </div>
           </div>
         </div>
-        <RunAnalysisButton
-          integrationId={targetIntegrationId}
+        <AutoStatusBadge
           llmReady={llmReady}
-          loading={llmStatusQ.isLoading}
-          filters={filters}
+          pending={sentimentQ.data?.pending_messages ?? 0}
         />
       </div>
 
@@ -375,123 +362,42 @@ function TopNegativeList({
   );
 }
 
-// Максимум, сколько ждём, пока воркер закончит размечать sentiment.
-// На больших историях (тысячи сообщений) одного прохода batch_size=200
-// может не хватить — UI всё равно отпускает кнопку через 90 сек, чтобы
-// не зависнуть навсегда, и пользователь жмёт ещё раз.
-const ANALYSIS_POLL_TIMEOUT_MS = 90_000;
-const ANALYSIS_POLL_INTERVAL_MS = 3_000;
-
-function RunAnalysisButton({
-  integrationId,
+/**
+ * Бэйдж «авто-режим включён». Заменил собой кнопки «Запустить анализ» /
+ * «Запустить тегирование»: NLP теперь крутится автоматически — cron каждые
+ * 5 минут плюс realtime-триггер на каждое новое клиентское сообщение
+ * (см. webhooks.py). Кнопка превратилась в пассивный индикатор статуса.
+ */
+function AutoStatusBadge({
   llmReady,
-  loading,
-  filters,
+  pending,
 }: {
-  integrationId: string | null;
   llmReady: boolean;
-  loading?: boolean;
-  filters: DashboardFilters;
+  pending: number;
 }) {
-  const qc = useQueryClient();
-  const [analyzing, setAnalyzing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  // Снимок состояния до клика — чтобы понять, сдвинулся ли счётчик.
-  const baselineRef = useRef<{ analyzed: number; pending: number } | null>(null);
-
-  // Поллинг dashboard/sentiment: завершаемся, когда analyzed вырос или
-  // pending уменьшился относительно baseline, либо по таймауту.
-  useEffect(() => {
-    if (!analyzing) return;
-    let cancelled = false;
-    const startedAt = Date.now();
-
-    const tick = async () => {
-      try {
-        const fresh = await api.getDashboardSentiment(filters);
-        // Кладём ответ в кэш напрямую, чтобы UI обновился без лишнего запроса.
-        qc.setQueryData(["dash-sentiment", filters], fresh);
-        qc.invalidateQueries({ queryKey: ["dash-top-negative"] });
-        qc.invalidateQueries({ queryKey: ["dash-overview"] });
-
-        const baseline = baselineRef.current;
-        if (
-          baseline &&
-          (fresh.analyzed_messages > baseline.analyzed ||
-            fresh.pending_messages < baseline.pending)
-        ) {
-          if (!cancelled) setAnalyzing(false);
-          return;
-        }
-      } catch {
-        // Сеть могла моргнуть — продолжаем поллить.
-      }
-      if (Date.now() - startedAt > ANALYSIS_POLL_TIMEOUT_MS) {
-        if (!cancelled) setAnalyzing(false);
-        return;
-      }
-      if (cancelled) return;
-      setTimeout(tick, ANALYSIS_POLL_INTERVAL_MS);
-    };
-
-    // Первый опрос — сразу, без задержки, чтобы быстро показать прогресс.
-    setTimeout(tick, ANALYSIS_POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-    };
-  }, [analyzing, filters, qc]);
-
-  const handleClick = async () => {
-    if (!integrationId) return;
-    setError(null);
-    const cached = qc.getQueryData<{
-      analyzed_messages: number;
-      pending_messages: number;
-    }>(["dash-sentiment", filters]);
-    baselineRef.current = {
-      analyzed: cached?.analyzed_messages ?? 0,
-      pending: cached?.pending_messages ?? 0,
-    };
-    setAnalyzing(true);
-    try {
-      await api.triggerSentimentAnalysis(integrationId);
-    } catch (err) {
-      setAnalyzing(false);
-      setError((err as Error).message || "Не удалось запустить анализ");
-    }
-  };
-
-  const disabled = loading || !llmReady || !integrationId || analyzing;
-  const title = !llmReady
-    ? "LLM-провайдер не настроен"
-    : !integrationId
-      ? "Нет подключённой интеграции"
-      : undefined;
-
+  if (!llmReady) {
+    return (
+      <div className="rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-700">
+        LLM не настроен
+      </div>
+    );
+  }
+  if (pending > 0) {
+    return (
+      <div className="flex items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2 py-1 text-xs text-sky-700">
+        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+        Авто-анализ: в очереди {pending}
+      </div>
+    );
+  }
   return (
-    <div className="flex flex-col items-end gap-1">
-      <Button onClick={handleClick} disabled={disabled} title={title}>
-        {analyzing ? (
-          <>
-            <Loader2 className="h-4 w-4 animate-spin" /> Анализирую…
-          </>
-        ) : (
-          <>
-            <Play className="h-4 w-4" /> Запустить анализ
-          </>
-        )}
-      </Button>
-      {error && (
-        <div
-          role="alert"
-          className="max-w-xs rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700"
-        >
-          {error}
-        </div>
-      )}
+    <div className="flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs text-emerald-700">
+      <span className="h-2 w-2 rounded-full bg-emerald-500" />
+      Авто-анализ включён
     </div>
   );
 }
+
 
 // ---------------------------------------------------------------------------
 // Tags-блок: о чём пишут клиенты (донат + список)
@@ -529,15 +435,7 @@ const TAG_PALETTE = [
   "#14b8a6",
 ];
 
-const TAGS_POLL_TIMEOUT_MS = 30_000;
-const TAGS_POLL_INTERVAL_MS = 3_000;
-// Минимум времени, который ждём перед тем, как заключить «новых сообщений
-// для тегирования нет». Worker должен успеть взять задачу из Redis и
-// сделать SELECT — обычно укладывается в 1-2 сек.
-const TAGS_NOOP_GRACE_MS = 4_000;
-
 function TagsBlock({ filters }: { filters: DashboardFilters }) {
-  const qc = useQueryClient();
   const tagsQ = useQuery({
     queryKey: ["dash-tags", filters],
     queryFn: () => api.getDashboardTags({ ...filters, limit: 20 }),
@@ -548,106 +446,9 @@ function TagsBlock({ filters }: { filters: DashboardFilters }) {
     queryFn: api.getLLMStatus,
     staleTime: 60_000,
   });
-  const integrationsQ = useQuery({
-    queryKey: ["integrations"],
-    queryFn: api.listIntegrations,
-  });
 
   const data = tagsQ.data;
-  const integrations = integrationsQ.data ?? [];
-  const targetIntegrationId =
-    filters.integration_id ?? integrations[0]?.id ?? null;
   const llmReady = llmStatusQ.data?.fast_available ?? false;
-
-  const [analyzing, setAnalyzing] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [info, setInfo] = useState<string | null>(null);
-  const baselineRef = useRef<{ analyzed: number; pending: number } | null>(null);
-
-  useEffect(() => {
-    if (!analyzing) return;
-    let cancelled = false;
-    const startedAt = Date.now();
-    const tick = async () => {
-      try {
-        const fresh = await api.getDashboardTags({ ...filters, limit: 20 });
-        qc.setQueryData(["dash-tags", filters], fresh);
-        const baseline = baselineRef.current;
-        if (
-          baseline &&
-          (fresh.analyzed_messages > baseline.analyzed ||
-            fresh.pending_messages < baseline.pending)
-        ) {
-          if (!cancelled) setAnalyzing(false);
-          return;
-        }
-        // Если pending был 0 на старте и остался 0 — таска отработала пустой,
-        // ждать роста счётчика бессмысленно. Останавливаемся после первого
-        // подтверждающего тика (~3 сек, чтобы worker успел enqueue→pop→run).
-        if (
-          baseline &&
-          baseline.pending === 0 &&
-          fresh.pending_messages === 0 &&
-          Date.now() - startedAt > TAGS_NOOP_GRACE_MS
-        ) {
-          if (!cancelled) {
-            setAnalyzing(false);
-            setInfo(
-              "Все сообщения уже обработаны — новых для тегирования нет.",
-            );
-          }
-          return;
-        }
-      } catch {
-        /* пропускаем */
-      }
-      if (Date.now() - startedAt > TAGS_POLL_TIMEOUT_MS) {
-        if (!cancelled) {
-          setAnalyzing(false);
-          setInfo(
-            "Анализ запущен в фоне. Обновите страницу через минуту, чтобы увидеть результат.",
-          );
-        }
-        return;
-      }
-      if (cancelled) return;
-      setTimeout(tick, TAGS_POLL_INTERVAL_MS);
-    };
-    setTimeout(tick, TAGS_POLL_INTERVAL_MS);
-    return () => {
-      cancelled = true;
-    };
-  }, [analyzing, filters, qc]);
-
-  const handleClick = async () => {
-    if (!targetIntegrationId) return;
-    setError(null);
-    setInfo(null);
-    const cached = qc.getQueryData<TagsResponse>(["dash-tags", filters]);
-    baselineRef.current = {
-      analyzed: cached?.analyzed_messages ?? 0,
-      pending: cached?.pending_messages ?? 0,
-    };
-    setAnalyzing(true);
-    try {
-      await api.triggerTagsAnalysis(targetIntegrationId);
-    } catch (err) {
-      setAnalyzing(false);
-      setError((err as Error).message || "Не удалось запустить тегирование");
-    }
-  };
-
-  const disabled =
-    llmStatusQ.isLoading ||
-    !llmReady ||
-    !targetIntegrationId ||
-    analyzing;
-  const title = !llmReady
-    ? "LLM-провайдер не настроен"
-    : !targetIntegrationId
-      ? "Нет подключённой интеграции"
-      : undefined;
-
   const buckets = data?.buckets ?? [];
 
   return (
@@ -664,32 +465,10 @@ function TagsBlock({ filters }: { filters: DashboardFilters }) {
             </div>
           </div>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <Button onClick={handleClick} disabled={disabled} title={title}>
-            {analyzing ? (
-              <>
-                <Loader2 className="h-4 w-4 animate-spin" /> Тегирую…
-              </>
-            ) : (
-              <>
-                <Play className="h-4 w-4" /> Запустить тегирование
-              </>
-            )}
-          </Button>
-          {error && (
-            <div
-              role="alert"
-              className="max-w-xs rounded-md border border-rose-200 bg-rose-50 px-2 py-1 text-xs text-rose-700"
-            >
-              {error}
-            </div>
-          )}
-          {info && !error && (
-            <div className="max-w-xs rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs text-slate-600">
-              {info}
-            </div>
-          )}
-        </div>
+        <AutoStatusBadge
+          llmReady={llmReady}
+          pending={data?.pending_messages ?? 0}
+        />
       </div>
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
