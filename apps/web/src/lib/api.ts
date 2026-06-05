@@ -520,9 +520,11 @@ export const api = {
     line_id?: string;
     sentiment?: Sentiment;
     limit?: number;
-    offset?: number;
+    cursor?: string;
   } = {}) =>
-    request<ConversationListItem[]>(`/api/v1/conversations${qs(params)}`),
+    request<{ items: ConversationListItem[]; next_cursor: string | null }>(
+      `/api/v1/conversations${qs(params)}`,
+    ),
 
   getConversation: (id: string) =>
     request<Conversation>(`/api/v1/conversations/${id}`),

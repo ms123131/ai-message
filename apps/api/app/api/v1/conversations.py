@@ -5,9 +5,10 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import desc, func, select, text
+from sqlalchemy import and_, desc, func, or_, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1._cursor import decode_cursor, encode_cursor
 from app.auth.deps import get_current_user
 from app.db import get_session
 from app.db.models import Conversation, ConversationChannel, Integration, Message
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/conversations", tags=["conversations"])
 SENTIMENT_THRESHOLD = 0.2
 
 
-@router.get("", response_model=list[ConversationListItem])
+@router.get("")
 async def list_conversations(
     integration_id: str | None = None,
     channel: ConversationChannel | None = None,
@@ -35,27 +36,43 @@ async def list_conversations(
     line_id: str | None = None,
     sentiment: Literal["positive", "neutral", "negative"] | None = None,
     limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
+    cursor: str | None = Query(
+        None,
+        description=(
+            "Курсор для следующей страницы. Получи из `next_cursor` "
+            "предыдущего ответа. Не комбинируй с offset."
+        ),
+    ),
+    offset: int = Query(
+        0,
+        ge=0,
+        description=(
+            "DEPRECATED. Используется только для обратной совместимости со "
+            "старым фронтом. Cursor-пагинация эффективнее на больших списках."
+        ),
+    ),
     session: AsyncSession = Depends(get_session),
     user: UserModel = Depends(get_current_user),
-) -> list[ConversationListItem]:
-    last_msg = (
-        select(
-            Message.conversation_id.label("conv_id"),
-            func.count(Message.id).label("cnt"),
-            func.max(Message.sent_at).label("last_at"),
-        )
-        .group_by(Message.conversation_id)
-        .subquery()
+) -> dict:
+    """Список диалогов tenant'а с cursor-пагинацией.
+
+    Сортировка: `COALESCE(last_message_at, created_at) DESC, id DESC`.
+    Денормализованные `last_message_at` и `last_message_preview` поддерживаются
+    импортером/поллером/webhook'ом (см. фаза 7 — оптимизация Inbox).
+    """
+    # Ключ сортировки: для пустых диалогов берём created_at — иначе они
+    # «провалятся в самый низ». Делаем явное coalesce в самом SELECT, чтобы
+    # курсор работал на одной шкале.
+    sort_key = func.coalesce(Conversation.last_message_at, Conversation.created_at).label(
+        "sort_key"
     )
+
     stmt = (
-        select(Conversation, last_msg.c.cnt, last_msg.c.last_at)
+        select(Conversation, sort_key)
         .join(Integration, Integration.id == Conversation.integration_id)
-        .outerjoin(last_msg, last_msg.c.conv_id == Conversation.id)
         .where(Integration.tenant_id == user.tenant_id)
-        .order_by(desc(func.coalesce(last_msg.c.last_at, Conversation.created_at)))
-        .limit(limit)
-        .offset(offset)
+        .order_by(desc(sort_key), desc(Conversation.id))
+        .limit(limit + 1)  # +1 — чтобы понять, есть ли next_cursor
     )
     if integration_id:
         stmt = stmt.where(Conversation.integration_id == integration_id)
@@ -77,32 +94,63 @@ async def list_conversations(
             Conversation.sentiment_score <= SENTIMENT_THRESHOLD,
         )
 
-    rows = (await session.execute(stmt)).all()
-    if not rows:
-        return []
-
-    conv_ids = [c.id for c, _, _ in rows]
-    # Берём по одному превью на conversation — последнее сообщение.
-    preview_stmt = (
-        select(Message.conversation_id, Message.text, Message.sent_at)
-        .where(Message.conversation_id.in_(conv_ids))
-        .order_by(Message.conversation_id, desc(Message.sent_at))
-    )
-    previews: dict[str, str] = {}
-    for conv_id, text, _ in (await session.execute(preview_stmt)).all():
-        previews.setdefault(conv_id, (text or "")[:200])
-
-    items: list[ConversationListItem] = []
-    for conv, cnt, last_at in rows:
-        items.append(
-            ConversationListItem(
-                **ConversationOut.model_validate(conv).model_dump(),
-                message_count=int(cnt or 0),
-                last_message_at=last_at,
-                last_message_preview=previews.get(conv.id),
+    # Курсор: композитное (sort_key, id) < (cursor_at, cursor_id).
+    # Если есть оба cursor и offset — приоритет у cursor (это новый путь).
+    cursor_pair = decode_cursor(cursor)
+    if cursor_pair is not None:
+        cur_at, cur_id = cursor_pair
+        if cur_at is not None:
+            stmt = stmt.where(
+                or_(
+                    sort_key < cur_at,
+                    and_(sort_key == cur_at, Conversation.id < cur_id),
+                )
             )
+        else:
+            # Курсор от пустого диалога — пропускаем всё с sort_key <= NULL
+            # (NULL быть не должен после coalesce, но защищаемся).
+            stmt = stmt.where(Conversation.id < cur_id)
+    elif offset > 0:
+        stmt = stmt.offset(offset)
+
+    rows = (await session.execute(stmt)).all()
+
+    # Есть «лишняя» строка → есть следующая страница.
+    has_more = len(rows) > limit
+    page = rows[:limit]
+
+    # Считаем message_count для страницы одним SELECT (GROUP BY).
+    counts: dict[str, int] = {}
+    if page:
+        conv_ids = [c.id for c, _ in page]
+        cnt_rows = (
+            await session.execute(
+                select(Message.conversation_id, func.count(Message.id))
+                .where(Message.conversation_id.in_(conv_ids))
+                .group_by(Message.conversation_id)
+            )
+        ).all()
+        counts = {cid: int(cnt or 0) for cid, cnt in cnt_rows}
+
+    items: list[dict] = []
+    for conv, sort_at in page:
+        items.append(
+            {
+                **ConversationListItem(
+                    **ConversationOut.model_validate(conv).model_dump(),
+                    message_count=counts.get(conv.id, 0),
+                    last_message_at=conv.last_message_at,
+                    last_message_preview=conv.last_message_preview,
+                ).model_dump(mode="json"),
+            }
         )
-    return items
+
+    next_cursor = None
+    if has_more and page:
+        last_conv, last_sort = page[-1]
+        next_cursor = encode_cursor(last_sort, last_conv.id)
+
+    return {"items": items, "next_cursor": next_cursor}
 
 
 async def _get_owned_conv(

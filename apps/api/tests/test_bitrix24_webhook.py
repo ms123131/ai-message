@@ -173,7 +173,7 @@ async def test_read_api_lists_conversations_and_messages(client, auth_tenant_id)
 
     list_resp = await client.get("/api/v1/conversations")
     assert list_resp.status_code == 200
-    items = list_resp.json()
+    items = list_resp.json()["items"]
     assert len(items) == 1
     item = items[0]
     assert item["channel"] == "telegram"

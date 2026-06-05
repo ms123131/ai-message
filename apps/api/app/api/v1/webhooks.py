@@ -102,6 +102,24 @@ async def _ingest_message_event(
         # Дубликат external_id внутри conversation — событие уже обработано.
         await session.rollback()
         return None
+
+    # Денормализованное last_message_at + превью для Inbox-сортировки.
+    # Webhook доставляет сообщения по одному в хронологическом порядке,
+    # поэтому просто обновляем conv'у самым свежим. SQLite возвращает
+    # naive-datetime даже для timestamptz-колонок, поэтому перед сравнением
+    # нормализуем обе стороны к aware (UTC).
+    from datetime import UTC
+
+    prev = conv.last_message_at
+    if prev is not None and prev.tzinfo is None:
+        prev = prev.replace(tzinfo=UTC)
+    incoming = ev.sent_at
+    if incoming.tzinfo is None:
+        incoming = incoming.replace(tzinfo=UTC)
+    if prev is None or incoming >= prev:
+        conv.last_message_at = ev.sent_at
+        text = ev.text or ""
+        conv.last_message_preview = text[:200] if text else None
     return msg
 
 
