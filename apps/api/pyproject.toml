@@ -28,6 +28,8 @@ dependencies = [
     # При недоступности (`pip install` без сети) app/nlp/embeddings.py
     # gracefully падает в null-режим, аналогично Natasha.
     "sentence-transformers>=3.0.0",
+    "structlog>=24.4.0",
+    "prometheus-fastapi-instrumentator>=7.0.0",
 ]
 
 [project.optional-dependencies]
