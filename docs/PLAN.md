@@ -180,8 +180,8 @@ SaaS-приложение для анализа коммуникационных
 | 6.2 LLM-теги | ✅ | словарь 41 темы, Conversation.tags денормализация, чипы #тема в Inbox |
 | 6.3 LLM-резюме | ✅ | smart-LLM, кнопка «Сводка» в Inbox, индикатор устаревания |
 | 6.6 Извлечение сущностей | ✅ | 14 типов: phone (RU+intl), email, url, @social, tracking, money, ИНН/ОГРН/КПП/счёт, card (маскир.+Luhn), IBAN, date + Natasha NER (person/loc/org). EntityChips в Inbox |
+| 6.5 Эмбеддинги + pgvector | ✅ | sentence-transformers MiniLM-L12 (384d), pgvector ivfflat cosine, GET /conversations/{id}/similar, кнопка «Похожие диалоги» в Inbox |
 | 6.4 BERTopic | ⏳ | динамические темы поверх эмбеддингов |
-| 6.5 Эмбеддинги + pgvector | ⏳ | семантический поиск похожих диалогов |
 | 6.7 Weekly insights + аномалии + AI Control Panel | ⏳ | smart-LLM, детекторы всплесков, единая страница |
 
 ### 6.0 Базовая абстракция LLM-провайдеров ✅
@@ -270,11 +270,37 @@ per-message раскраска в просмотре диалога.
   пересчитывает темы и сохраняет в `topic_clusters`. Замена статичного
   словаря 6.2 на динамический.
 
-### 6.5 Эмбеддинги + pgvector
-- [ ] `sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2`,
-  CPU. Каждое сообщение → 384-dim вектор в `messages.embedding`
-- [ ] pgvector + ivfflat индекс, эндпоинт «семантический поиск похожих»
-- [ ] Кнопка «найти похожие диалоги» в Inbox
+### 6.5 Эмбеддинги + pgvector ✅
+
+Локальные эмбеддинги без LLM-вызовов — основа для семантического поиска
+и BERTopic (6.4).
+
+- [x] Postgres-образ → `pgvector/pgvector:pg16` (compose.yml), миграция
+  0010 включает `CREATE EXTENSION vector`, добавляет `messages.embedding`
+  типа `vector(384)` + `embedding_at` + `embedding_model`
+- [x] `app/db/types.py::EmbeddingVector` — TypeDecorator: `Vector(384)`
+  на Postgres, JSON-список на SQLite (тесты)
+- [x] Частичный индекс `ix_messages_embedding_pending` (NULL embedding)
+  + ivfflat-индекс `ix_messages_embedding_cosine` (lists=100, cosine)
+- [x] `app/nlp/embeddings.py` — lazy-init `sentence-transformers/
+  paraphrase-multilingual-MiniLM-L12-v2` (~470 МБ), L2-нормализованные
+  векторы, gracefully падает в null-режим без пакета
+- [x] Worker `embed_messages_for_integration` под локом `kind=embeddings`,
+  фильтр client+agent + bitrix-system; `nlp_dispatch_cron` ставит и
+  embed-задачу
+- [x] `POST /api/v1/integrations/{id}/analyze-embeddings` (rate-limit 6/min)
+- [x] `GET /api/v1/conversations/{id}/similar?limit=N` — центроид
+  исходного диалога считается в Python, дальше один SQL с `<=>` группой
+  по conversation_id (MIN distance), фильтр по tenant. На SQLite —
+  `available=False`, graceful-degrade
+- [x] UI: `SimilarBlock` в Inbox под карточкой — раскрывающийся список
+  с процентом близости, ссылка на похожий диалог
+- [x] Тесты (6 кейсов): stub-encoder с детерминированным hash → vector,
+  батч+БД (пишет, пропускает уже-эмбедженных, держит pending при
+  недоступной модели), эндпоинт enqueue, similar graceful на SQLite,
+  cron ставит и embed-таску
+- [x] Config: `EMBEDDINGS_MODEL` / `EMBEDDINGS_BATCH_SIZE` /
+  `EMBEDDINGS_MAX_CHARS` (Settings)
 
 ### 6.6 Извлечение сущностей ✅ (commits `94bf3c9`, `a9d91d1`, `acfef0a`, `1283db7`)
 

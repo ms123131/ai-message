@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from sqlalchemy import desc, func, select
+from sqlalchemy import desc, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.deps import get_current_user
@@ -152,6 +152,126 @@ async def trigger_summarize(
         "job_id": getattr(job, "job_id", "unknown"),
         "conversation_id": conversation_id,
     }
+
+
+@router.get("/{conversation_id}/similar")
+async def list_similar_conversations(
+    conversation_id: str,
+    limit: int = Query(10, ge=1, le=50),
+    session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
+) -> dict:
+    """Семантически похожие диалоги (фаза 6.5).
+
+    Берём центроид эмбеддингов сообщений исходного диалога (среднее по всем
+    непустым векторам) и ищем диалоги того же tenant'а с минимальной
+    cosine-distance до центроида. Группируем по conversation_id, берём
+    минимальную дистанцию по сообщению (один близкий ответ — уже сигнал).
+
+    Доступно только на Postgres с pgvector. На SQLite (тесты) возвращаем
+    пустой список и `available=False`, чтобы фронт мог graceful-degrade.
+    """
+    await _get_owned_conv(session, conversation_id, user)
+
+    dialect = session.bind.dialect.name if session.bind else ""
+    if dialect != "postgresql":
+        return {"available": False, "items": []}
+
+    # Центроид. Считаем в Python: вытащить векторы исходного диалога и
+    # усреднить. На больших диалогах (>200 сообщений) можно было бы делать
+    # это в БД через AVG(embedding), но pgvector агрегата нет — только
+    # сторонний `vector_avg`, не во всех версиях. Дешевле и переноснее
+    # сделать на стороне приложения.
+    src_embeddings = (
+        await session.execute(
+            select(Message.embedding)
+            .where(
+                Message.conversation_id == conversation_id,
+                Message.embedding.is_not(None),
+            )
+        )
+    ).scalars().all()
+    if not src_embeddings:
+        return {"available": True, "items": [], "reason": "no_embeddings"}
+
+    # pgvector возвращает list[float] через адаптер. Если из БД пришла
+    # строка ('[0.1,0.2,...]') — pgvector её распарсил.
+    n = 0
+    centroid: list[float] | None = None
+    for vec in src_embeddings:
+        if not vec:
+            continue
+        if centroid is None:
+            centroid = list(vec)
+        else:
+            for i, v in enumerate(vec):
+                centroid[i] += v
+        n += 1
+    if not centroid or n == 0:
+        return {"available": True, "items": [], "reason": "no_embeddings"}
+    centroid = [v / n for v in centroid]
+
+    # Сериализуем вектор в строковый литерал pgvector: '[v1,v2,...]'.
+    # Так избегаем зависимости от регистрации asyncpg-codec'а в сессии.
+    centroid_str = "[" + ",".join(f"{v:.6f}" for v in centroid) + "]"
+
+    # MIN(distance) per conversation: один хорошо ложащийся вектор уже
+    # значит, что диалог тематически близок. Исключаем исходный диалог.
+    sql = text(
+        """
+        SELECT c.id AS conv_id,
+               MIN(m.embedding <=> CAST(:centroid AS vector)) AS distance
+          FROM messages m
+          JOIN conversations c ON c.id = m.conversation_id
+          JOIN integrations i  ON i.id = c.integration_id
+         WHERE i.tenant_id = :tenant_id
+           AND c.id <> :conv_id
+           AND m.embedding IS NOT NULL
+         GROUP BY c.id
+         ORDER BY distance ASC
+         LIMIT :lim
+        """
+    )
+    rows = (
+        await session.execute(
+            sql,
+            {
+                "centroid": centroid_str,
+                "tenant_id": user.tenant_id,
+                "conv_id": conversation_id,
+                "lim": limit,
+            },
+        )
+    ).all()
+    if not rows:
+        return {"available": True, "items": []}
+
+    conv_ids = [r.conv_id for r in rows]
+    distances = {r.conv_id: float(r.distance) for r in rows}
+
+    convs = (
+        await session.execute(
+            select(Conversation).where(Conversation.id.in_(conv_ids))
+        )
+    ).scalars().all()
+    by_id = {c.id: c for c in convs}
+
+    items = []
+    for conv_id in conv_ids:
+        conv = by_id.get(conv_id)
+        if not conv:
+            continue
+        d = distances[conv_id]
+        items.append(
+            {
+                **ConversationOut.model_validate(conv).model_dump(mode="json"),
+                "distance": d,
+                # Cosine similarity для удобства фронта: 1 - distance (для
+                # нормализованных векторов distance ∈ [0,2], similarity ∈ [-1,1]).
+                "similarity": 1.0 - d,
+            }
+        )
+    return {"available": True, "items": items}
 
 
 @router.get("/{conversation_id}/messages", response_model=list[MessageOut])

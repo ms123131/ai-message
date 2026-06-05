@@ -599,6 +599,29 @@ export const api = {
       { method: "POST" },
     ),
 
+  triggerEmbeddingsAnalysis: (integrationId: string, batchSize = 200) =>
+    request<{ status: string; job_id: string; integration_id: string }>(
+      `/api/v1/integrations/${integrationId}/analyze-embeddings${qs({ batch_size: batchSize })}`,
+      { method: "POST" },
+    ),
+
+  listSimilarConversations: (conversationId: string, limit = 10) =>
+    request<{
+      available: boolean;
+      items: Array<{
+        id: string;
+        contact_name: string | null;
+        contact_external_id: string | null;
+        channel: string;
+        status: string;
+        distance: number;
+        similarity: number;
+      }>;
+      reason?: string;
+    }>(
+      `/api/v1/conversations/${conversationId}/similar${qs({ limit })}`,
+    ),
+
   getPortalUsers: (params: { integration_id?: string; only_active?: boolean } = {}) =>
     request<PortalUser[]>(
       `/api/v1/dashboard/portal-users${qs({
