@@ -8,6 +8,7 @@ import {
   Plug,
   RefreshCw,
   Sparkles,
+  Users,
   X,
 } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
@@ -529,6 +530,8 @@ function ConversationView({ conv }: { conv: ConversationListItem }) {
           isStale={isStale}
         />
       )}
+      <SimilarBlock conversationId={conv.id} />
+
       <div className="flex-1 space-y-3 overflow-y-auto p-6">
         {messagesQ.isLoading && (
           <div className="flex items-center gap-2 text-sm text-slate-500">
@@ -604,6 +607,85 @@ function SummaryBlock({
     </div>
   );
 }
+
+function SimilarBlock({ conversationId }: { conversationId: string }) {
+  const [open, setOpen] = useState(false);
+  const q = useQuery({
+    queryKey: ["similar", conversationId],
+    queryFn: () => api.listSimilarConversations(conversationId, 10),
+    enabled: open,
+    staleTime: 60_000,
+  });
+
+  return (
+    <div className="border-b border-slate-200 bg-white">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between gap-2 px-6 py-2 text-left text-xs font-medium text-slate-600 hover:bg-slate-50"
+      >
+        <span className="inline-flex items-center gap-1.5">
+          <Users className="h-3.5 w-3.5 text-slate-400" />
+          Похожие диалоги
+        </span>
+        <span className="text-slate-400">{open ? "скрыть" : "показать"}</span>
+      </button>
+      {open && (
+        <div className="px-6 pb-3">
+          {q.isLoading && (
+            <div className="flex items-center gap-2 text-xs text-slate-500">
+              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Ищу…
+            </div>
+          )}
+          {q.isError && (
+            <div className="text-xs text-rose-600">
+              {(q.error as Error).message || "Не удалось получить список"}
+            </div>
+          )}
+          {q.data && q.data.available === false && (
+            <div className="text-xs text-slate-500">
+              Семантический поиск недоступен (нужен Postgres с расширением
+              pgvector — см. фаза 6.5).
+            </div>
+          )}
+          {q.data && q.data.available && q.data.items.length === 0 && (
+            <div className="text-xs text-slate-500">
+              {q.data.reason === "no_embeddings"
+                ? "Для этого диалога ещё не посчитаны эмбеддинги. Запустите анализ на странице интеграции."
+                : "Похожих диалогов не нашлось."}
+            </div>
+          )}
+          {q.data && q.data.items.length > 0 && (
+            <ul className="space-y-1">
+              {q.data.items.map((item) => {
+                const sim = Math.max(0, Math.min(1, item.similarity));
+                const pct = Math.round(sim * 100);
+                const name =
+                  item.contact_name || item.contact_external_id || "Без имени";
+                return (
+                  <li key={item.id}>
+                    <Link
+                      to={`/inbox?conversation=${item.id}`}
+                      className="flex items-center justify-between gap-3 rounded-md px-2 py-1.5 text-sm hover:bg-brand-50"
+                    >
+                      <span className="min-w-0 truncate text-slate-700">
+                        {name}
+                      </span>
+                      <span className="shrink-0 text-xs text-slate-500">
+                        {pct}%
+                      </span>
+                    </Link>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 const senderSide: Record<SenderType, "me" | "them" | "system"> = {
   agent: "me",

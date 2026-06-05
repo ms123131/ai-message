@@ -22,6 +22,12 @@ dependencies = [
     "cryptography>=43.0.0",
     "slowapi>=0.1.9",
     "natasha>=1.6.0",
+    "pgvector>=0.3.6",
+    # sentence-transformers тянет torch (~700МБ) — образ заметно растёт,
+    # но воркер должен уметь считать эмбеддинги без отдельной сборки.
+    # При недоступности (`pip install` без сети) app/nlp/embeddings.py
+    # gracefully падает в null-режим, аналогично Natasha.
+    "sentence-transformers>=3.0.0",
 ]
 
 [project.optional-dependencies]

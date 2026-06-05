@@ -17,6 +17,7 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
+from app.db.types import EmbeddingVector, EMBEDDING_DIM
 from app.security.types import EncryptedString
 
 
@@ -339,6 +340,15 @@ class Message(Base):
     entities: Mapped[dict[str, Any] | None] = mapped_column(SAJSON)
     entities_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
+    # Эмбеддинги для семантического поиска (фаза 6.5). На Postgres —
+    # pgvector.Vector(384), на SQLite — JSON-список float'ов. NULL = ещё
+    # не посчитано; ix_messages_embedding_pending — частичный индекс для
+    # выборки батчей воркером. ivfflat-индекс cosine построен миграцией
+    # 0010 в чистом SQL (через ALTER TABLE / CREATE INDEX).
+    embedding: Mapped[list[float] | None] = mapped_column(EmbeddingVector)
+    embedding_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    embedding_model: Mapped[str | None] = mapped_column(String(100))
+
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
 
     __table_args__ = (
@@ -359,6 +369,16 @@ class Message(Base):
             "sent_at",
             postgresql_where=sql_text("tags IS NULL"),
             sqlite_where=sql_text("tags IS NULL"),
+        ),
+        # Частичный индекс для embeddings-воркера (фаза 6.5).
+        # ivfflat-индекс на pgvector колонке (ix_messages_embedding_cosine)
+        # создаётся миграцией 0010 чистым SQL — Alembic его не отслеживает.
+        Index(
+            "ix_messages_embedding_pending",
+            "conversation_id",
+            "sent_at",
+            postgresql_where=sql_text("embedding IS NULL"),
+            sqlite_where=sql_text("embedding IS NULL"),
         ),
         # Частичный индекс для entities-воркера (фаза 6.6).
         Index(

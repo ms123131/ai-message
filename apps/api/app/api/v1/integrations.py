@@ -451,6 +451,40 @@ async def trigger_entities_analysis(
 
 
 @router.post(
+    "/{integration_id}/analyze-embeddings",
+    status_code=status.HTTP_202_ACCEPTED,
+)
+@limiter.limit("6/minute")
+async def trigger_embeddings_analysis(
+    request: Request,  # noqa: ARG001 — нужен slowapi
+    integration_id: str,
+    batch_size: int = Query(200, ge=10, le=1000),
+    session: AsyncSession = Depends(get_session),
+    user: UserModel = Depends(get_current_user),
+) -> dict[str, str]:
+    """Расчёт эмбеддингов сообщений (фаза 6.5).
+
+    Локальная модель sentence-transformers на CPU, без LLM-вызовов.
+    Заполняет `messages.embedding` (pgvector) — основа для семантического
+    поиска похожих диалогов в `GET /conversations/{id}/similar`.
+    """
+    from app.workers.redis_pool import get_pool
+
+    integration = await _get_owned(session, integration_id, user)
+    pool = await get_pool()
+    job = await pool.enqueue_job(
+        "embed_messages_for_integration",
+        integration.id,
+        batch_size,
+    )
+    return {
+        "status": "accepted",
+        "job_id": getattr(job, "job_id", "unknown"),
+        "integration_id": integration.id,
+    }
+
+
+@router.post(
     "/{integration_id}/enrich-conversations",
     status_code=status.HTTP_202_ACCEPTED,
 )

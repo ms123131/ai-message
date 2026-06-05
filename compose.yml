@@ -12,7 +12,11 @@ name: ai-message
 
 services:
   postgres:
-    image: postgres:16-alpine
+    # pgvector/pgvector:pg16 — официальный образ Postgres 16 с предустановленным
+    # расширением pgvector (см. фазу 6.5 — эмбеддинги сообщений). Бинарно
+    # совместим с postgres:16 — тома postgres_data переносятся без миграции
+    # данных. Миграция 0010 включает CREATE EXTENSION vector.
+    image: pgvector/pgvector:pg16
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-aimessage}

@@ -55,7 +55,10 @@ async def nlp_dispatch_cron(ctx: dict[str, Any]) -> dict[str, int]:
         await pool.enqueue_job(
             "analyze_entities_for_integration", integration_id, batch_size
         )
-        enqueued += 3
+        await pool.enqueue_job(
+            "embed_messages_for_integration", integration_id, batch_size
+        )
+        enqueued += 4
     logger.info(
         "nlp_cron: integrations=%d enqueued=%d", len(integrations), enqueued
     )

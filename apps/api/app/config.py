@@ -132,6 +132,16 @@ class Settings(BaseSettings):
     nlp_cron_interval_minutes: int = 0
     nlp_cron_batch_size: int = 200
 
+    # Эмбеддинги (фаза 6.5). Модель из sentence-transformers, размерность
+    # фиксирована в pgvector-колонке (384). При смене модели на другую с
+    # такой же размерностью embedding_model в БД позволит отследить
+    # вектора, требующие пересчёта.
+    embeddings_model: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+    embeddings_batch_size: int = 64
+    # Лимит на длину текста для эмбеддинга (символов). Модель режет до
+    # 128 токенов сама; ограничение здесь — против гигантских пасторалей.
+    embeddings_max_chars: int = 2000
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
