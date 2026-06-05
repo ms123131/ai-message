@@ -1,17 +1,20 @@
+import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
-  AlertTriangle,
   CheckCircle2,
   Clock,
   KeyRound,
-  Loader2,
   Plug,
   Trash2,
   Webhook,
 } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/Button";
+import { ConfirmDialog } from "../components/ui/Dialog";
+import { EmptyState } from "../components/ui/EmptyState";
+import { Skeleton } from "../components/ui/Skeleton";
+import { toast } from "../components/ui/Toast";
 import { api, type Integration } from "../lib/api";
 
 type CatalogItem = {
@@ -54,16 +57,21 @@ export function IntegrationsPage() {
   const navigate = useNavigate();
   const qc = useQueryClient();
 
-  const { data, isLoading, isError, error } = useQuery({
+  const { data, isLoading } = useQuery({
     queryKey: ["integrations"],
     queryFn: api.listIntegrations,
   });
 
   const del = useMutation({
     mutationFn: (id: string) => api.deleteIntegration(id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["integrations"] }),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["integrations"] });
+      toast.success("Подключение удалено");
+      setPendingDelete(null);
+    },
   });
 
+  const [pendingDelete, setPendingDelete] = useState<Integration | null>(null);
   const connections = data ?? [];
 
   return (
@@ -73,17 +81,25 @@ export function IntegrationsPage() {
         description="Источники коммуникаций для анализа"
       />
       <div className="space-y-8 p-8">
-        {isError && (
-          <div className="flex items-start gap-2 rounded-md border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
-            <AlertTriangle className="h-4 w-4 shrink-0" />
-            <div>Не удалось загрузить подключения: {(error as Error).message}</div>
-          </div>
+        {isLoading && (
+          <section>
+            <h2 className="mb-3 text-sm font-medium text-slate-500">
+              Подключённые порталы
+            </h2>
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              <Skeleton className="h-28" />
+              <Skeleton className="h-28" />
+            </div>
+          </section>
         )}
 
-        {isLoading && (
-          <div className="flex items-center gap-2 text-sm text-slate-500">
-            <Loader2 className="h-4 w-4 animate-spin" /> Загрузка…
-          </div>
+        {!isLoading && connections.length === 0 && (
+          <EmptyState
+            icon={Plug}
+            title="Нет подключённых источников"
+            description="Подключите Bitrix24, чтобы анализировать диалоги и CRM-активность"
+            size="md"
+          />
         )}
 
         {connections.length > 0 && (
@@ -96,14 +112,29 @@ export function IntegrationsPage() {
                 <ConnectionCard
                   key={c.id}
                   conn={c}
-                  onDelete={() => {
-                    if (confirm("Удалить это подключение?")) del.mutate(c.id);
-                  }}
+                  onDelete={() => setPendingDelete(c)}
                 />
               ))}
             </div>
           </section>
         )}
+
+        <ConfirmDialog
+          open={pendingDelete !== null}
+          onClose={() => setPendingDelete(null)}
+          onConfirm={() => {
+            if (pendingDelete) del.mutate(pendingDelete.id);
+          }}
+          title="Удалить подключение?"
+          description={
+            pendingDelete
+              ? `Будут удалены токены и история «${pendingDelete.label ?? pendingDelete.domain ?? pendingDelete.id}». Действие нельзя отменить.`
+              : undefined
+          }
+          confirmLabel="Удалить"
+          destructive
+          loading={del.isPending}
+        />
 
         <section>
           <h2 className="mb-3 text-sm font-medium text-slate-500">
