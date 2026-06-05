@@ -35,6 +35,29 @@ async def list_conversations(
     operator_id: str | None = None,
     line_id: str | None = None,
     sentiment: Literal["positive", "neutral", "negative"] | None = None,
+    tags: list[str] | None = Query(
+        None,
+        description=(
+            "Список slug'ов тем для фильтрации. Например ?tags=оплата&tags=доставка"
+        ),
+    ),
+    tag_mode: Literal["any", "all"] = Query(
+        "any",
+        description=(
+            "any — диалог попадает в выборку, если у него есть хотя бы один "
+            "из указанных тегов; all — должны быть все."
+        ),
+    ),
+    q: str | None = Query(
+        None,
+        min_length=2,
+        max_length=200,
+        description=(
+            "Полнотекстовый поиск по сообщениям диалога. На Postgres — через "
+            "tsvector + websearch_to_tsquery (русский конфиг). На SQLite — "
+            "ILIKE fallback. Минимум 2 символа."
+        ),
+    ),
     limit: int = Query(50, ge=1, le=200),
     cursor: str | None = Query(
         None,
@@ -93,6 +116,60 @@ async def list_conversations(
             Conversation.sentiment_score >= -SENTIMENT_THRESHOLD,
             Conversation.sentiment_score <= SENTIMENT_THRESHOLD,
         )
+
+    # Фильтр по тегам диалога (денормализованная Conversation.tags — JSON array
+    # из объединённых тегов клиентских сообщений, см. recompute_conversation_tags).
+    # На PG нативные операторы jsonb ?| (any) / ?& (all). На SQLite — нет json
+    # contains-функции, используем JSON1 EXISTS через json_each.
+    if tags:
+        clean_tags = [t.strip() for t in tags if t and t.strip()]
+        if clean_tags:
+            dialect = session.bind.dialect.name if session.bind else "postgresql"
+            if dialect == "postgresql":
+                # tags::jsonb ?| array['a','b'] -> any; ?& -> all
+                op = "?|" if tag_mode == "any" else "?&"
+                stmt = stmt.where(
+                    text(
+                        f"CAST(conversations.tags AS jsonb) {op} :tags_arr"
+                    ).bindparams(tags_arr=clean_tags)
+                )
+            else:
+                # SQLite: для каждого тега ищем по json_each. ANY → OR, ALL → AND.
+                # Не самый шустрый путь, но dev/test-режим — данных мало.
+                combiner = or_ if tag_mode == "any" else and_
+                conds = [
+                    text(
+                        f"EXISTS (SELECT 1 FROM json_each(conversations.tags) "
+                        f"WHERE json_each.value = :tag_{i})"
+                    ).bindparams(**{f"tag_{i}": t})
+                    for i, t in enumerate(clean_tags)
+                ]
+                stmt = stmt.where(combiner(*conds))
+
+    # Полнотекстовый поиск по сообщениям. Чтобы не выводить дубликаты
+    # (диалог может иметь много совпадений), используем EXISTS-подзапрос.
+    # PG: tsvector с russian-конфигом + websearch_to_tsquery (понимает кавычки,
+    # OR, -минус). SQLite: ILIKE по text — не FTS, но как fallback для dev.
+    if q:
+        dialect = session.bind.dialect.name if session.bind else "postgresql"
+        if dialect == "postgresql":
+            search_exists = text(
+                "EXISTS (SELECT 1 FROM messages m "
+                "WHERE m.conversation_id = conversations.id "
+                "AND m.tsv @@ websearch_to_tsquery('russian', :q))"
+            ).bindparams(q=q)
+        else:
+            # SQLite COLLATE NOCASE — только ASCII. Для русского обходим
+            # двойным LOWER() (для UTF-8 в SQLite это работает с ICU/sqlite3
+            # по-разному, но базовая lower() для кириллицы работает корректно
+            # на CPython 3.12+).
+            like = f"%{q.lower()}%"
+            search_exists = text(
+                "EXISTS (SELECT 1 FROM messages m "
+                "WHERE m.conversation_id = conversations.id "
+                "AND LOWER(m.text) LIKE :q)"
+            ).bindparams(q=like)
+        stmt = stmt.where(search_exists)
 
     # Курсор: композитное (sort_key, id) < (cursor_at, cursor_id).
     # Если есть оба cursor и offset — приоритет у cursor (это новый путь).

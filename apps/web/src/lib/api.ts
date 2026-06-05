@@ -428,10 +428,25 @@ export type AuthResponse = {
   tenant: TenantInfo;
 };
 
-function qs(params: Record<string, string | number | undefined | null>): string {
+function qs(
+  params: Record<
+    string,
+    string | number | undefined | null | readonly string[]
+  >,
+): string {
   const usp = new URLSearchParams();
   for (const [k, v] of Object.entries(params)) {
-    if (v !== undefined && v !== null && v !== "") usp.set(k, String(v));
+    if (v === undefined || v === null || v === "") continue;
+    if (Array.isArray(v)) {
+      // Повторяющиеся ключи: ?tags=a&tags=b (как ожидает FastAPI list[str])
+      for (const item of v) {
+        if (item !== undefined && item !== null && item !== "") {
+          usp.append(k, String(item));
+        }
+      }
+    } else {
+      usp.set(k, String(v));
+    }
   }
   const s = usp.toString();
   return s ? `?${s}` : "";
@@ -512,16 +527,21 @@ export const api = {
     ),
 
   // --- Conversations / Dashboard ---
-  listConversations: (params: {
-    integration_id?: string;
-    channel?: ConversationChannel;
-    status?: "open" | "closed";
-    operator_id?: string;
-    line_id?: string;
-    sentiment?: Sentiment;
-    limit?: number;
-    cursor?: string;
-  } = {}) =>
+  listConversations: (
+    params: {
+      integration_id?: string;
+      channel?: ConversationChannel;
+      status?: "open" | "closed";
+      operator_id?: string;
+      line_id?: string;
+      sentiment?: Sentiment;
+      tags?: readonly string[];
+      tag_mode?: "any" | "all";
+      q?: string;
+      limit?: number;
+      cursor?: string;
+    } = {},
+  ) =>
     request<{ items: ConversationListItem[]; next_cursor: string | null }>(
       `/api/v1/conversations${qs(params)}`,
     ),

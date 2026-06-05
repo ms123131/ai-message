@@ -16,6 +16,9 @@ import { EmptyState } from "../components/ui/EmptyState";
 import { Skeleton, SkeletonText } from "../components/ui/Skeleton";
 import { EntityChips } from "../components/EntityChips";
 import { SentimentBadge } from "../components/SentimentBadge";
+import { SearchBar } from "../components/inbox/SearchBar";
+import { TagsFilter, tagLabel } from "../components/inbox/TagsFilter";
+import { focusInput, useInboxShortcuts } from "../lib/keyboard";
 import { cn } from "../lib/cn";
 import {
   api,
@@ -82,6 +85,10 @@ export function InboxPage() {
       line_id: searchParams.get("line_id") ?? undefined,
       sentiment:
         (searchParams.get("sentiment") as Sentiment | null) ?? undefined,
+      tags: searchParams.getAll("tags"),
+      tag_mode:
+        (searchParams.get("tag_mode") as "any" | "all" | null) ?? "any",
+      q: searchParams.get("q") ?? "",
     }),
     [searchParams],
   );
@@ -100,7 +107,15 @@ export function InboxPage() {
 
   const conversationsQ = useQuery({
     queryKey: ["conversations", filters],
-    queryFn: () => api.listConversations({ ...filters, limit: 100 }),
+    queryFn: () =>
+      api.listConversations({
+        ...filters,
+        // FastAPI требует min_length=2 на q — короче не отправляем.
+        q: filters.q.length >= 2 ? filters.q : undefined,
+        tags: filters.tags.length ? filters.tags : undefined,
+        tag_mode: filters.tags.length ? filters.tag_mode : undefined,
+        limit: 100,
+      }),
     enabled: integrationsQ.isSuccess,
     refetchInterval: 15000,
   });
@@ -141,11 +156,76 @@ export function InboxPage() {
       "operator_id",
       "line_id",
       "sentiment",
+      "tags",
+      "tag_mode",
+      "q",
       "conv",
     ].forEach((k) => params.delete(k));
     setSearchParams(params, { replace: true });
   }
-  const activeFilters = Object.entries(filters).filter(([, v]) => v);
+  function setQuery(q: string) {
+    const params = new URLSearchParams(searchParams);
+    if (q) params.set("q", q);
+    else params.delete("q");
+    setSearchParams(params, { replace: true });
+  }
+  function setTags(tags: string[]) {
+    const params = new URLSearchParams(searchParams);
+    params.delete("tags");
+    tags.forEach((t) => params.append("tags", t));
+    if (tags.length === 0) params.delete("tag_mode");
+    setSearchParams(params, { replace: true });
+  }
+  function setTagMode(mode: "any" | "all") {
+    const params = new URLSearchParams(searchParams);
+    if (mode === "any") params.delete("tag_mode");
+    else params.set("tag_mode", mode);
+    setSearchParams(params, { replace: true });
+  }
+  function removeTag(tag: string) {
+    setTags(filters.tags.filter((t) => t !== tag));
+  }
+  // activeFilters: считаем активными только то, что задано пользователем
+  // (массив тегов — если не пустой, q — если не пустая строка).
+  const activeFilters = useMemo(() => {
+    const out: Array<[string, unknown]> = [];
+    if (filters.integration_id) out.push(["integration_id", filters.integration_id]);
+    if (filters.channel) out.push(["channel", filters.channel]);
+    if (filters.status) out.push(["status", filters.status]);
+    if (filters.operator_id) out.push(["operator_id", filters.operator_id]);
+    if (filters.line_id) out.push(["line_id", filters.line_id]);
+    if (filters.sentiment) out.push(["sentiment", filters.sentiment]);
+    if (filters.tags.length) out.push(["tags", filters.tags]);
+    if (filters.q) out.push(["q", filters.q]);
+    return out;
+  }, [filters]);
+
+  // Поиск + клавиатурная навигация по списку диалогов.
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useInboxShortcuts(
+    {
+      onFocusSearch: focusInput(searchInputRef),
+      onNext: () => {
+        if (conversations.length === 0) return;
+        const idx = conversations.findIndex((c) => c.id === selectedId);
+        const next = conversations[Math.min(idx + 1, conversations.length - 1)];
+        if (next) setSelectedId(next.id);
+      },
+      onPrev: () => {
+        if (conversations.length === 0) return;
+        const idx = conversations.findIndex((c) => c.id === selectedId);
+        const prev = conversations[Math.max(idx - 1, 0)];
+        if (prev) setSelectedId(prev.id);
+      },
+      onEscape: () => {
+        // Если что-то в фокусе — пусть стандартный blur; иначе сбрасываем поиск.
+        if (document.activeElement instanceof HTMLInputElement) return;
+        if (filters.q) setQuery("");
+      },
+    },
+    [conversations, filters.q],
+  );
 
   const operatorName = useMemo(() => {
     if (!filters.operator_id) return null;
@@ -248,6 +328,21 @@ export function InboxPage() {
               onRemove={() => clearFilter("sentiment")}
             />
           )}
+          {filters.q && (
+            <FilterChip
+              label="Поиск"
+              value={`«${filters.q}»`}
+              onRemove={() => setQuery("")}
+            />
+          )}
+          {filters.tags.map((tag) => (
+            <FilterChip
+              key={tag}
+              label={filters.tag_mode === "all" ? "Тема (И)" : "Тема"}
+              value={tagLabel(tag)}
+              onRemove={() => removeTag(tag)}
+            />
+          ))}
           <button
             type="button"
             onClick={clearAllFilters}
@@ -257,6 +352,26 @@ export function InboxPage() {
           </button>
         </div>
       )}
+
+      {/* Sidebar header: search + tags filter */}
+      <div className="border-b border-slate-200 bg-white px-4 py-2">
+        <div className="flex items-center gap-2">
+          <div className="flex-1">
+            <SearchBar
+              value={filters.q}
+              onChange={setQuery}
+              inputRef={searchInputRef}
+            />
+          </div>
+          <TagsFilter
+            selected={filters.tags}
+            onChange={setTags}
+            mode={filters.tag_mode}
+            onModeChange={setTagMode}
+            integrationId={filters.integration_id}
+          />
+        </div>
+      </div>
       {!filters.sentiment && (
         <div className="flex items-center gap-2 border-b border-slate-200 bg-white px-6 py-2 text-xs">
           <span className="text-slate-400">Быстрый фильтр:</span>

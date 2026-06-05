@@ -22,8 +22,10 @@ engine = create_async_engine(
 
 # SQLite по умолчанию игнорирует FOREIGN KEY и ON DELETE CASCADE.
 # В тестах используется sqlite, поэтому включаем enforcement на каждое соединение.
+# Заодно регистрируем Unicode-aware LOWER (стандартный SQLite lower() — ASCII only,
+# из-за чего поиск по кириллице в нижнем регистре не находил CAPS-сообщения).
 @event.listens_for(Engine, "connect")
-def _enable_sqlite_fk(dbapi_connection, _record):
+def _configure_sqlite(dbapi_connection, _record):
     module = dbapi_connection.__class__.__module__
     if "sqlite" not in module and "aiosqlite" not in module:
         return
@@ -32,6 +34,13 @@ def _enable_sqlite_fk(dbapi_connection, _record):
         cursor.execute("PRAGMA foreign_keys=ON")
     finally:
         cursor.close()
+    # Перебиваем встроенный lower() Python-функцией, которая знает про
+    # Unicode case folding. На больших объёмах — медленнее, но в dev/test
+    # это ОК; на проде используется PG FTS, эта функция не вызывается.
+    try:
+        dbapi_connection.create_function("lower", 1, lambda s: s.lower() if s else s)
+    except Exception:  # noqa: BLE001 — старые драйверы без create_function
+        pass
 
 AsyncSessionLocal = async_sessionmaker(
     engine,
