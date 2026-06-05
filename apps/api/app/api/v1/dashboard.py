@@ -34,6 +34,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import Select, and_, case, desc, distinct, func, not_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.cache import cache_get, cache_set, make_cache_key
+
 from app.auth.deps import get_current_user
 from app.db import get_session
 from app.db.models import (
@@ -76,6 +78,14 @@ class _Filters:
         channel: ConversationChannel | None,
         operator_id: str | None,
     ) -> None:
+        self.tenant_id = tenant_id
+        # Сохраняем разобранные значения, чтобы использовать как часть
+        # cache-ключа (тот должен учитывать все измерения, влияющие на ответ).
+        self.cache_dims: dict[str, Any] = {
+            "integration_id": integration_id,
+            "channel": channel.value if channel else None,
+            "operator_id": operator_id,
+        }
         self.conv_filters: list[Any] = [
             Conversation.integration_id.in_(
                 select(Integration.id).where(Integration.tenant_id == tenant_id)
@@ -341,7 +351,14 @@ async def overview(
     days: int = Query(14, ge=1, le=180),
     filters: _Filters = Depends(_filters_dep),
     session: AsyncSession = Depends(get_session),
-) -> OverviewResponse:
+) -> Any:
+    cache_key = make_cache_key(
+        "overview", tenant_id=filters.tenant_id, days=days, **filters.cache_dims
+    )
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return cached
+
     range_from, range_to = _window(days)
     prev_from = range_from - timedelta(days=days)
     prev_to = range_from
@@ -560,7 +577,7 @@ async def overview(
     avg_now = cur_msgs / cur_convs if cur_convs else 0.0
     avg_prev = prev_msgs / prev_convs if prev_convs else 0.0
 
-    return OverviewResponse(
+    response = OverviewResponse(
         range_days=days,
         range_from=range_from,
         range_to=range_to,
@@ -580,6 +597,8 @@ async def overview(
         sentiment_avg_prev=prev_sent_avg,
         sentiment_pending_messages=sent_pending,
     )
+    await cache_set(cache_key, response.model_dump(mode="json"))
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -722,7 +741,13 @@ async def timeline(
     days: int = Query(14, ge=1, le=180),
     filters: _Filters = Depends(_filters_dep),
     session: AsyncSession = Depends(get_session),
-) -> TimelineResponse:
+) -> Any:
+    cache_key = make_cache_key(
+        "timeline", tenant_id=filters.tenant_id, days=days, **filters.cache_dims
+    )
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return cached
     range_from, _ = _window(days)
     dialect = session.bind.dialect.name if session.bind else "postgresql"
 
@@ -777,7 +802,9 @@ async def timeline(
                 closed=closed_counts.get(key, 0),
             )
         )
-    return TimelineResponse(range_days=days, points=points)
+    response = TimelineResponse(range_days=days, points=points)
+    await cache_set(cache_key, response.model_dump(mode="json"))
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -790,7 +817,16 @@ async def by_channel(
     days: int = Query(14, ge=1, le=180),
     filters: _Filters = Depends(_filters_dep),
     session: AsyncSession = Depends(get_session),
-) -> ByChannelResponse:
+) -> Any:
+    cache_key = make_cache_key(
+        "by_channel",
+        tenant_id=filters.tenant_id,
+        days=days,
+        **filters.cache_dims,
+    )
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return cached
     range_from, _ = _window(days)
 
     # Сначала диалоги за окно по каналам.
@@ -824,7 +860,9 @@ async def by_channel(
         for ch in all_channels
     ]
     slices.sort(key=lambda s: s.messages, reverse=True)
-    return ByChannelResponse(slices=slices)
+    response = ByChannelResponse(slices=slices)
+    await cache_set(cache_key, response.model_dump(mode="json"))
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -838,7 +876,17 @@ async def by_manager(
     limit: int = Query(50, ge=1, le=200),
     filters: _Filters = Depends(_filters_dep),
     session: AsyncSession = Depends(get_session),
-) -> ByManagerResponse:
+) -> Any:
+    cache_key = make_cache_key(
+        "by_manager",
+        tenant_id=filters.tenant_id,
+        days=days,
+        limit=limit,
+        **filters.cache_dims,
+    )
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return cached
     """Таблица операторов: кто и сколько работал за период.
 
     Раньше группировка была по `Conversation.assigned_user_id`, но это поле
@@ -971,7 +1019,9 @@ async def by_manager(
             )
         )
     result_rows.sort(key=lambda x: x.conversations, reverse=True)
-    return ByManagerResponse(rows=result_rows[:limit])
+    response = ByManagerResponse(rows=result_rows[:limit])
+    await cache_set(cache_key, response.model_dump(mode="json"))
+    return response
 
 
 # ---------------------------------------------------------------------------
@@ -984,7 +1034,13 @@ async def heatmap(
     days: int = Query(30, ge=1, le=180),
     filters: _Filters = Depends(_filters_dep),
     session: AsyncSession = Depends(get_session),
-) -> HeatmapResponse:
+) -> Any:
+    cache_key = make_cache_key(
+        "heatmap", tenant_id=filters.tenant_id, days=days, **filters.cache_dims
+    )
+    cached = await cache_get(cache_key)
+    if cached is not None:
+        return cached
     range_from, _ = _window(days)
     dialect = session.bind.dialect.name if session.bind else "postgresql"
 
@@ -1019,7 +1075,9 @@ async def heatmap(
         HeatmapCell(weekday=int(wd or 0), hour=int(hr or 0), count=int(cnt or 0))
         for wd, hr, cnt in (await session.execute(stmt)).all()
     ]
-    return HeatmapResponse(cells=cells)
+    response = HeatmapResponse(cells=cells)
+    await cache_set(cache_key, response.model_dump(mode="json"))
+    return response
 
 
 # ---------------------------------------------------------------------------

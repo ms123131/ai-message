@@ -102,7 +102,7 @@ async def test_conversation_list_includes_sentiment_score(client, auth_tenant_id
     await _seed_with_sentiment(auth_tenant_id)
     resp = await client.get("/api/v1/conversations")
     assert resp.status_code == 200, resp.text
-    items = resp.json()
+    items = resp.json()["items"]
     by_id = {it["id"]: it for it in items}
     assert by_id["cs_neg"]["sentiment_score"] == pytest.approx(-0.8)
     assert by_id["cs_neu"]["sentiment_score"] == pytest.approx(0.0)
@@ -115,7 +115,7 @@ async def test_conversation_filter_sentiment_negative(client, auth_tenant_id):
     await _seed_with_sentiment(auth_tenant_id)
     resp = await client.get("/api/v1/conversations?sentiment=negative")
     assert resp.status_code == 200, resp.text
-    ids = [it["id"] for it in resp.json()]
+    ids = [it["id"] for it in resp.json()["items"]]
     assert ids == ["cs_neg"]
 
 
@@ -124,7 +124,7 @@ async def test_conversation_filter_sentiment_positive(client, auth_tenant_id):
     await _seed_with_sentiment(auth_tenant_id)
     resp = await client.get("/api/v1/conversations?sentiment=positive")
     assert resp.status_code == 200, resp.text
-    ids = [it["id"] for it in resp.json()]
+    ids = [it["id"] for it in resp.json()["items"]]
     assert ids == ["cs_pos"]
 
 
@@ -134,7 +134,7 @@ async def test_conversation_filter_sentiment_neutral(client, auth_tenant_id):
     resp = await client.get("/api/v1/conversations?sentiment=neutral")
     assert resp.status_code == 200, resp.text
     # neutral — попадает только cs_neu (0.0). cs_nul с None не должен попасть.
-    ids = [it["id"] for it in resp.json()]
+    ids = [it["id"] for it in resp.json()["items"]]
     assert ids == ["cs_neu"]
 
 

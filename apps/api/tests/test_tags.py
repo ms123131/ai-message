@@ -367,7 +367,7 @@ async def test_conversation_list_exposes_tags(
         f"/api/v1/conversations?integration_id={integration_id}"
     )
     assert resp.status_code == 200, resp.text
-    items = resp.json()
+    items = resp.json()["items"]
     assert items
     target = next(i for i in items if i["id"] == conv_id)
     assert sorted(target["tags"]) == sorted(["доставка", "статус_заказа"])

@@ -306,6 +306,24 @@ async def _recompute_conversation_analytics(
     else:
         conv.response_time_sec = None
 
+    # Денормализуем last_message_at + превью — это главный sort-ключ Inbox.
+    # Дешевле один SELECT на conv, чем JOIN+GROUP BY на каждом запросе списка.
+    last_row = (
+        await session.execute(
+            select(Message.sent_at, Message.text)
+            .where(Message.conversation_id == conv.id)
+            .order_by(Message.sent_at.desc())
+            .limit(1)
+        )
+    ).first()
+    if last_row is not None:
+        conv.last_message_at = last_row[0]
+        text = last_row[1] or ""
+        conv.last_message_preview = text[:200] if text else None
+    else:
+        conv.last_message_at = None
+        conv.last_message_preview = None
+
 
 async def _insert_messages(
     session: AsyncSession,

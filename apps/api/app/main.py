@@ -1,4 +1,3 @@
-import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -11,11 +10,16 @@ from app.api.v1 import api_router
 from app.config import get_settings
 from app.db.session import engine
 from app.integrations.llm import reset_cache as reset_llm_cache
+from app.observability import RequestIdMiddleware, get_logger, setup_logging
+from app.observability.metrics import refresh_dynamic_gauges, setup_metrics
+from app.observability.middleware import _add_request_id_header
 from app.security.ratelimit import limiter, rate_limit_exceeded_handler
 from app.workers.redis_pool import close_pool
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-logger = logging.getLogger("ai-message")
+# Логи: JSON в проде/тесте, человекочитаемые в dev.
+_settings = get_settings()
+setup_logging(json_logs=not _settings.is_dev, level="INFO")
+logger = get_logger("ai-message")
 
 
 @asynccontextmanager
@@ -24,7 +28,7 @@ async def lifespan(_: FastAPI):
     # (см. compose-сервис `migrate`).
     # Фоновый поллинг и импорт теперь делает отдельный воркер-контейнер
     # (`compose worker`), API только enqueue-ит задачи в Redis.
-    logger.info("ai-message api v%s started", __version__)
+    logger.info("api_started", version=__version__)
     try:
         yield
     finally:
@@ -43,6 +47,10 @@ def create_app() -> FastAPI:
     )
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
+    # Порядок middleware важен: starlette применяет в обратном порядке
+    # добавления, поэтому RequestId должен быть добавлен ПОСЛЕДНИМ, чтобы
+    # сработать ПЕРВЫМ (обернуть всех остальных). Так request_id будет в
+    # contextvars к моменту, когда любой нижестоящий код пишет лог.
     app.add_middleware(SlowAPIMiddleware)
     app.add_middleware(
         CORSMiddleware,
@@ -51,6 +59,18 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+    app.middleware("http")(_add_request_id_header)
+    app.add_middleware(RequestIdMiddleware)
+
+    @app.middleware("http")
+    async def _refresh_metrics_on_scrape(request, call_next):
+        # Перед скрапом /metrics обновляем динамические gauge'ы (NLP pending,
+        # длина arq-очереди). На прочих запросах no-op.
+        if request.url.path == "/metrics":
+            await refresh_dynamic_gauges()
+        return await call_next(request)
+
+    setup_metrics(app)
     app.include_router(api_router)
     return app
 

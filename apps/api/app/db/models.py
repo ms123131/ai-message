@@ -214,6 +214,19 @@ class Conversation(Base):
 
     # Денормализованные таймстемпы для быстрой аналитики (FRT, AHT, объём).
     # Заполняются импортером и поллером, индекс — на created_at уже есть.
+    # Денормализованное «время последнего сообщения» — основной ключ
+    # сортировки Inbox. Раньше вычислялось на лету через JOIN+GROUP BY на
+    # messages, что давало seq-scan и плохой план на 100k+ диалогов.
+    # Поддерживается импортером/поллером/webhook'ом одним UPDATE на запись
+    # нового Message. Если NULL — диалог пустой, сортируется по created_at.
+    last_message_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    # Превью последнего сообщения (первые 200 символов). Денормализация
+    # ради того же запроса списка — иначе нужен второй проход по messages
+    # с DISTINCT ON. Обновляется тем же триггером, что last_message_at.
+    last_message_preview: Mapped[str | None] = mapped_column(String(200))
+
     first_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     first_agent_reply_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True)
@@ -242,6 +255,18 @@ class Conversation(Base):
     summary_model: Mapped[str | None] = mapped_column(String(100))
     summary_messages_count: Mapped[int | None] = mapped_column(Integer)
 
+    # Денормализованный центроид эмбеддингов сообщений диалога (фаза 7.4).
+    # На Postgres — pgvector(384); ivfflat cosine-индекс на колонке (см.
+    # миграция 0012). Используется в `/conversations/{id}/similar` —
+    # одна строка вместо N в /similar-запросе. Пересчитывается воркером
+    # `embed_messages_for_integration` после батча новых эмбеддингов.
+    embedding_centroid: Mapped[list[float] | None] = mapped_column(
+        EmbeddingVector
+    )
+    embedding_centroid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -266,6 +291,13 @@ class Conversation(Base):
             "ix_conversations_integration_created",
             "integration_id",
             "created_at",
+        ),
+        # Cursor-пагинация Inbox: (last_message_at DESC, id DESC) — единый
+        # индекс на сортировку и WHERE-clause курсора.
+        Index(
+            "ix_conversations_last_message",
+            "last_message_at",
+            "id",
         ),
         # Дашборд by-manager: фильтр по integration + assigned_user.
         Index(

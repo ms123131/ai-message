@@ -107,7 +107,7 @@ export function InboxPage() {
   const [selectedId, setSelectedId] = useState<string | null>(
     initialConvParam,
   );
-  const conversations = conversationsQ.data ?? [];
+  const conversations = conversationsQ.data?.items ?? [];
 
   // Если в URL пришёл ?conv=... а его нет в выдаче (например, не подходит
   // под текущие фильтры), всё равно подсветим первый из выдачи.
