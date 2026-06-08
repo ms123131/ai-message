@@ -111,8 +111,18 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
 
 // --- Domain types ---
 
-export type IntegrationKind = "bitrix24";
-export type IntegrationMode = "oauth" | "webhook";
+export type IntegrationKind =
+  | "bitrix24"
+  | "telegram_bot"
+  | "telegram_user"
+  | "whatsapp_user";
+export type IntegrationMode =
+  | "oauth"
+  | "webhook"
+  | "bot_token"
+  | "qr_link"
+  | "mtproto_session"
+  | "wazzup_token";
 export type IntegrationStatus = "pending" | "connected" | "error";
 
 export type Integration = {
@@ -124,8 +134,27 @@ export type Integration = {
   status: IntegrationStatus;
   member_id?: string | null;
   scope?: string | null;
+  last_health_at?: string | null;
+  last_health_status?: string | null;
   created_at: string;
   updated_at: string;
+};
+
+// --- Telegram personal QR-логин ---
+
+export type TgQrStartResponse = {
+  integration_id: string;
+  qr_url: string;
+  expires_in: number;
+};
+
+export type TgQrPollState = "waiting" | "requires_password" | "connected";
+
+export type TgQrPollResponse = {
+  state: TgQrPollState;
+  qr_url?: string | null;
+  expires_in?: number | null;
+  integration?: Integration | null;
 };
 
 export type ConversationChannel =
@@ -524,6 +553,25 @@ export const api = {
   getBitrix24Config: () =>
     request<{ has_global_credentials: boolean; install_url: string }>(
       "/api/v1/integrations/bitrix24/config",
+    ),
+
+  // --- Telegram personal (QR) ---
+  telegramUserQrStart: () =>
+    request<TgQrStartResponse>(
+      "/api/v1/integrations/telegram-user/qr/start",
+      { method: "POST" },
+    ),
+
+  telegramUserQrPoll: (id: string) =>
+    request<TgQrPollResponse>(
+      `/api/v1/integrations/telegram-user/${id}/qr/poll`,
+      { method: "POST" },
+    ),
+
+  telegramUserPassword: (id: string, password: string) =>
+    request<TgQrPollResponse>(
+      `/api/v1/integrations/telegram-user/${id}/password`,
+      { method: "POST", body: JSON.stringify({ password }) },
     ),
 
   // --- Conversations / Dashboard ---

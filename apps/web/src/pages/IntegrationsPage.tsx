@@ -6,9 +6,12 @@ import {
   Clock,
   KeyRound,
   Plug,
+  QrCode,
+  Send,
   Trash2,
   Webhook,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/Button";
 import { ConfirmDialog } from "../components/ui/Dialog";
@@ -23,6 +26,9 @@ type CatalogItem = {
   description: string;
   available: boolean;
   priority?: boolean;
+  badge?: string;
+  icon?: LucideIcon;
+  route?: string;
 };
 
 const catalog: CatalogItem[] = [
@@ -32,23 +38,35 @@ const catalog: CatalogItem[] = [
     description: "CRM + Open Channels (WhatsApp, Telegram, ВК, виджет сайта)",
     available: true,
     priority: true,
+    route: "/integrations/bitrix24/new",
+  },
+  {
+    id: "telegram_user",
+    name: "Telegram (личный аккаунт)",
+    description: "Подключение через QR-код, как новое устройство",
+    available: true,
+    badge: "новое",
+    icon: Send,
+    route: "/integrations/telegram-user/new",
+  },
+  {
+    id: "telegram_bot",
+    name: "Telegram Bot",
+    description: "Прямой Bot API по токену",
+    available: false,
+    icon: Send,
+  },
+  {
+    id: "whatsapp_user",
+    name: "WhatsApp (личный)",
+    description: "Подключение через сканирование QR (multi-device)",
+    available: false,
+    icon: QrCode,
   },
   {
     id: "email",
     name: "Email (IMAP)",
     description: "Подключение почтовых ящиков по IMAP/SMTP",
-    available: false,
-  },
-  {
-    id: "telegram",
-    name: "Telegram Bot",
-    description: "Прямой Bot API",
-    available: false,
-  },
-  {
-    id: "whatsapp",
-    name: "WhatsApp Business",
-    description: "WhatsApp Cloud API (Meta)",
     available: false,
   },
 ];
@@ -141,51 +159,56 @@ export function IntegrationsPage() {
             Доступные источники
           </h2>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
-            {catalog.map((i) => (
-              <div
-                key={i.id}
-                className="rounded-lg border border-slate-200 bg-white p-5"
-              >
-                <div className="flex items-start justify-between">
-                  <div className="flex items-center gap-3">
-                    <div className="grid h-10 w-10 place-items-center rounded-md bg-brand-50 text-brand-600">
-                      <Plug className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2 font-medium">
-                        {i.name}
-                        {i.priority && (
-                          <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700">
-                            приоритет
-                          </span>
-                        )}
+            {catalog.map((i) => {
+              const Icon = i.icon ?? Plug;
+              return (
+                <div
+                  key={i.id}
+                  className="rounded-lg border border-slate-200 bg-white p-5"
+                >
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-center gap-3">
+                      <div className="grid h-10 w-10 place-items-center rounded-md bg-brand-50 text-brand-600">
+                        <Icon className="h-5 w-5" />
                       </div>
-                      <div className="text-sm text-slate-500">
-                        {i.description}
+                      <div>
+                        <div className="flex items-center gap-2 font-medium">
+                          {i.name}
+                          {i.priority && (
+                            <span className="rounded bg-amber-100 px-1.5 py-0.5 text-xs text-amber-700">
+                              приоритет
+                            </span>
+                          )}
+                          {i.badge && (
+                            <span className="rounded bg-sky-100 px-1.5 py-0.5 text-xs text-sky-700">
+                              {i.badge}
+                            </span>
+                          )}
+                        </div>
+                        <div className="text-sm text-slate-500">
+                          {i.description}
+                        </div>
                       </div>
                     </div>
                   </div>
+                  <div className="mt-4 flex items-center justify-between">
+                    {i.available ? (
+                      <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
+                        <CheckCircle2 className="h-4 w-4" /> готово к подключению
+                      </span>
+                    ) : (
+                      <span className="text-xs text-slate-400">скоро</span>
+                    )}
+                    <Button
+                      disabled={!i.available || !i.route}
+                      onClick={() => i.route && navigate(i.route)}
+                    >
+                      Подключить
+                    </Button>
+                  </div>
                 </div>
-                <div className="mt-4 flex items-center justify-between">
-                  {i.available ? (
-                    <span className="inline-flex items-center gap-1 text-xs text-emerald-600">
-                      <CheckCircle2 className="h-4 w-4" /> готово к подключению
-                    </span>
-                  ) : (
-                    <span className="text-xs text-slate-400">скоро</span>
-                  )}
-                  <Button
-                    disabled={!i.available}
-                    onClick={() =>
-                      i.id === "bitrix24" &&
-                      navigate("/integrations/bitrix24/new")
-                    }
-                  >
-                    Подключить
-                  </Button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </section>
       </div>
@@ -200,7 +223,7 @@ function ConnectionCard({
   conn: Integration;
   onDelete: () => void;
 }) {
-  const ModeIcon = conn.mode === "oauth" ? KeyRound : Webhook;
+  const ModeIcon = modeIcon(conn);
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-5">
       <div className="flex items-start justify-between gap-3">
@@ -214,8 +237,8 @@ function ConnectionCard({
             {conn.domain}
           </div>
           <div className="mt-2 text-xs text-slate-400">
-            {conn.mode === "oauth" ? "OAuth-приложение" : "Входящий webhook"} ·
-            добавлен {new Date(conn.created_at).toLocaleString("ru-RU")}
+            {modeLabel(conn)} · добавлен{" "}
+            {new Date(conn.created_at).toLocaleString("ru-RU")}
           </div>
         </div>
         <button
@@ -228,6 +251,32 @@ function ConnectionCard({
       </div>
     </div>
   );
+}
+
+function modeIcon(conn: Integration): LucideIcon {
+  if (conn.kind === "telegram_user") return QrCode;
+  if (conn.kind === "telegram_bot") return Send;
+  if (conn.kind === "whatsapp_user") return QrCode;
+  return conn.mode === "oauth" ? KeyRound : Webhook;
+}
+
+function modeLabel(conn: Integration): string {
+  switch (conn.mode) {
+    case "oauth":
+      return "OAuth-приложение";
+    case "webhook":
+      return "Входящий webhook";
+    case "bot_token":
+      return "Bot API (токен)";
+    case "qr_link":
+      return "QR-логин";
+    case "mtproto_session":
+      return "MTProto-сессия";
+    case "wazzup_token":
+      return "Wazzup API";
+    default:
+      return conn.mode;
+  }
 }
 
 function StatusBadge({ status }: { status: Integration["status"] }) {
