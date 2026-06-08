@@ -13,3 +13,16 @@ services:
   api:
     ports:
       - "8000:8000"  # Swagger UI: http://localhost:8000/docs
+
+  # Fast-iteration режим для фронта: монтируем уже собранный локально dist/
+  # вместо пересборки внутри контейнера. Цикл правки:
+  #   1. pnpm --filter @ai-message/web build   # ~10 сек на хосте
+  #   2. docker compose restart web           # ~1 сек (nginx reload)
+  # Никакого `compose build web` не нужно.
+  #
+  # Альтернатива получше для активной разработки: вообще не запускайте web
+  # в compose, гоняйте `pnpm --filter @ai-message/web dev` на хосте против
+  # VITE_API_URL=http://localhost:8080 — получаете HMR.
+  web:
+    volumes:
+      - ./apps/web/dist:/usr/share/nginx/html:ro

@@ -15,13 +15,20 @@ RUN corepack enable && corepack prepare pnpm@10.33.4 --activate
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json apps/web/
 
-RUN pnpm install --frozen-lockfile
+# BuildKit cache mount для pnpm store — переживает между сборками,
+# не светится в финальном образе. Первая холодная сборка качает всё,
+# дальнейшие переиспользуют распакованный store: ~50с → ~5с на install.
+# Требует BuildKit (включён по умолчанию в Docker 23+).
+RUN --mount=type=cache,id=pnpm-store,target=/root/.local/share/pnpm/store \
+    pnpm install --frozen-lockfile
 
 # Копируем исходники и собираем
 COPY apps/web/ apps/web/
 ARG VITE_API_URL=/api
 ENV VITE_API_URL=$VITE_API_URL
-RUN pnpm --filter @ai-message/web build
+# Кэш Vite/tsc между билдами — переживает не-связанные изменения в коде.
+RUN --mount=type=cache,id=web-vite,target=/repo/apps/web/node_modules/.vite \
+    pnpm --filter @ai-message/web build
 
 # Stage 2: nginx
 FROM nginx:1.27-alpine
