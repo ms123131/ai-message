@@ -3,14 +3,21 @@
 FROM python:3.12-slim AS base
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_DEFAULT_TIMEOUT=120 \
+    PIP_RETRIES=10
 
 WORKDIR /app
 
-# Установка зависимостей отдельным слоем для кэша
+# Установка зависимостей отдельным слоем для кэша.
+# BuildKit cache mount на /root/.cache/pip переживает между сборками,
+# в финальный образ не попадает. Холодная сборка качает torch/sentence-
+# transformers (~1.5 ГБ); следующие переиспользуют wheel-кэш и выполняются
+# за секунды. Без cache-mount каждое падение pypi.org требовало полной
+# перекачки — это и было причиной ReadTimeoutError.
 COPY pyproject.toml ./
-RUN pip install --upgrade pip && pip install .
+RUN --mount=type=cache,id=pip-cache,target=/root/.cache/pip \
+    pip install --upgrade pip && pip install .
 
 # Код приложения и миграции
 COPY app ./app
