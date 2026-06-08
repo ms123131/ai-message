@@ -381,9 +381,13 @@ per-message раскраска в просмотре диалога.
 
 ## Фаза 8 — Другие каналы
 
+Подробный план интеграции — `docs/PLAN_CONNECTORS.md` (Telegram Bot →
+Personal Telegram → WhatsApp Personal + универсальный механизм verify).
+
 - [ ] Email коннектор (IMAP IDLE + Microsoft Graph + Gmail API)
 - [ ] Telegram Bot API (прямой коннектор)
-- [ ] WhatsApp Cloud API (Meta)
+- [ ] Personal Telegram (Telethon, QR-логин — основной flow; phone+code — fallback)
+- [ ] WhatsApp personal (Wazzup-reseller или Baileys-сайдкар — выбор TBD)
 - [ ] amoCRM, HubSpot — после Bitrix24
 
 ---

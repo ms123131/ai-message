@@ -157,6 +157,17 @@ class Settings(BaseSettings):
     # 0 = отключить (так делает test-окружение через env).
     dashboard_cache_ttl_sec: int = 60
 
+    # Personal Telegram (MTProto, Telethon). api_id/api_hash выдаёт
+    # https://my.telegram.org per-app — одна пара на всё приложение,
+    # привязка к телефону пользователя происходит уже при логине.
+    # Без значений endpoint'ы /integrations/telegram-user/* отвечают 503.
+    telegram_api_id: int | None = Field(default=None)
+    telegram_api_hash: str | None = Field(default=None)
+    # TTL контекста QR-логина в секундах. Сам QR-токен Telegram живёт ~30с,
+    # но Telethon-объект может пересоздавать его через qr.recreate(); TTL
+    # ограничивает суммарное время попыток.
+    telegram_qr_ttl_sec: int = 300
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

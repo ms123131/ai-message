@@ -3,20 +3,22 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.models import IntegrationMode, IntegrationStatus
+from app.db.models import IntegrationKind, IntegrationMode, IntegrationStatus
 
 
 class IntegrationOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: str
-    kind: Literal["bitrix24"]
+    kind: IntegrationKind
     mode: IntegrationMode
     label: str
     domain: str
     status: IntegrationStatus
     member_id: str | None = None
     scope: str | None = None
+    last_health_at: datetime | None = None
+    last_health_status: str | None = None
     created_at: datetime
     updated_at: datetime
 

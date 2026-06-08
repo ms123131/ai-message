@@ -17,7 +17,7 @@ from sqlalchemy import text as sql_text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
-from app.db.types import EmbeddingVector, EMBEDDING_DIM
+from app.db.types import EmbeddingVector
 from app.security.types import EncryptedString
 
 
@@ -72,10 +72,17 @@ class User(Base):
 
 class IntegrationKind(str, Enum):
     bitrix24 = "bitrix24"
+    telegram_bot = "telegram_bot"
+    telegram_user = "telegram_user"
+    whatsapp_user = "whatsapp_user"
 
 
 class IntegrationMode(str, Enum):
     oauth = "oauth"
+    bot_token = "bot_token"
+    qr_link = "qr_link"
+    mtproto_session = "mtproto_session"
+    wazzup_token = "wazzup_token"
 
 
 class IntegrationStatus(str, Enum):
@@ -122,6 +129,23 @@ class Integration(Base):
     member_id: Mapped[str | None] = mapped_column(String(100))
     scope: Mapped[str | None] = mapped_column(String(500))
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Универсальный шифрованный блоб для не-OAuth интеграций:
+    # - telegram_user → StringSession Telethon
+    # - whatsapp_user (Baileys) → JSON creds
+    # Не используется для bitrix24/telegram_bot — там хватает access_token.
+    auth_blob: Mapped[str | None] = mapped_column(EncryptedString)
+
+    # Секрет, которым подписан входящий webhook (Telegram Bot —
+    # X-Telegram-Bot-Api-Secret-Token; Wazzup — HMAC). Шифруется.
+    webhook_secret: Mapped[str | None] = mapped_column(EncryptedString)
+
+    # Состояние периодической health-проверки (см. PLAN_CONNECTORS §5).
+    last_health_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    last_health_status: Mapped[str | None] = mapped_column(String(40))
+    last_health_detail: Mapped[str | None] = mapped_column(String(500))
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

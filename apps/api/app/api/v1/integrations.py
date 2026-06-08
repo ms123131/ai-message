@@ -15,6 +15,7 @@ from app.db.models import (
     ImportJob,
     ImportJobStatus,
     Integration,
+    IntegrationKind,
     IntegrationStatus,
 )
 from app.db.models import User as UserModel
@@ -119,6 +120,26 @@ async def delete_integration(
         request=request,
         meta={"domain": obj.domain, "kind": obj.kind.value if obj.kind else None},
     )
+
+    # Для personal Telegram сначала пытаемся log_out на стороне MTProto —
+    # это инвалидирует StringSession и убирает наше устройство из списка
+    # «Активные сеансы» в Telegram-клиенте. Если упало (сессия мертва,
+    # пакет недоступен) — всё равно продолжаем удаление в БД.
+    if obj.kind == IntegrationKind.telegram_user and obj.auth_blob:
+        try:
+            from app.integrations.telegram_user import teardown_qr_session
+            from app.integrations.telegram_user.client import make_client
+
+            await teardown_qr_session(obj.id)
+            client = make_client(obj.auth_blob)
+            try:
+                await client.connect()
+                await client.log_out()
+            finally:
+                await client.disconnect()
+        except Exception:  # noqa: S110, BLE001 — log_out best-effort
+            pass
+
     await session.delete(obj)
     await session.commit()
 

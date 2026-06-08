@@ -30,6 +30,10 @@ dependencies = [
     "sentence-transformers>=3.0.0",
     "structlog>=24.4.0",
     "prometheus-fastapi-instrumentator>=7.0.0",
+    # Personal Telegram (MTProto). Импортируется lazily — если пакет
+    # недоступен, /integrations/telegram-user/* отвечает 503; остальные
+    # фичи API продолжают работать.
+    "telethon>=1.36.0",
 ]
 
 [project.optional-dependencies]

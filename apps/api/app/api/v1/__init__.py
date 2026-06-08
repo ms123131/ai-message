@@ -7,6 +7,7 @@ from app.api.v1 import (
     health,
     install,
     integrations,
+    integrations_telegram_user,
     sla_targets,
     system,
     webhooks,
@@ -16,6 +17,7 @@ api_router = APIRouter(prefix="/api/v1")
 api_router.include_router(health.router)
 api_router.include_router(auth.router)
 api_router.include_router(integrations.router)
+api_router.include_router(integrations_telegram_user.router)
 api_router.include_router(conversations.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(sla_targets.router)
