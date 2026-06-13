@@ -457,6 +457,12 @@ export type AuthResponse = {
   tenant: TenantInfo;
 };
 
+// Регистрация при Hard-confirm: токен не выдаётся, нужно подтвердить email.
+export type RegisterResponse = {
+  requires_verification: boolean;
+  email: string;
+};
+
 function qs(
   params: Record<
     string,
@@ -515,7 +521,7 @@ export const api = {
     full_name?: string;
     workspace_name?: string;
   }) =>
-    request<AuthResponse>("/api/v1/auth/register", {
+    request<RegisterResponse>("/api/v1/auth/register", {
       method: "POST",
       body: JSON.stringify(body),
     }),
@@ -524,6 +530,31 @@ export const api = {
     request<AuthResponse>("/api/v1/auth/login", {
       method: "POST",
       body: JSON.stringify(body),
+    }),
+
+  // Подтверждение email по токену из письма — сразу авторизует.
+  verifyEmail: (token: string) =>
+    request<AuthResponse>("/api/v1/auth/verify", {
+      method: "POST",
+      body: JSON.stringify({ token }),
+    }),
+
+  resendVerification: (email: string) =>
+    request<void>("/api/v1/auth/resend-verification", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  forgotPassword: (email: string) =>
+    request<void>("/api/v1/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  resetPassword: (token: string, password: string) =>
+    request<void>("/api/v1/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, password }),
     }),
 
   refresh: () =>

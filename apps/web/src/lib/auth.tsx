@@ -13,6 +13,7 @@ import {
   tokenStore,
   setUnauthorizedHandler,
   type CurrentUser,
+  type RegisterResponse,
   type TenantInfo,
 } from "./api";
 
@@ -28,7 +29,8 @@ type AuthState = {
     password: string;
     full_name?: string;
     workspace_name?: string;
-  }) => Promise<void>;
+  }) => Promise<RegisterResponse>;
+  verify: (token: string) => Promise<void>;
   logout: () => Promise<void>;
 };
 
@@ -103,14 +105,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       full_name?: string;
       workspace_name?: string;
     }) => {
-      const resp = await api.register(data);
-      tokenStore.set(resp.access_token);
-      setUser(resp.user);
-      setTenant(resp.tenant);
-      setStatus("authenticated");
+      // Hard-confirm: регистрация НЕ авторизует — возвращаем флаг, страница
+      // покажет «проверьте почту». Вход откроется после /verify.
+      return await api.register(data);
     },
     [],
   );
+
+  const verify = useCallback(async (token: string) => {
+    const resp = await api.verifyEmail(token);
+    tokenStore.set(resp.access_token);
+    setUser(resp.user);
+    setTenant(resp.tenant);
+    setStatus("authenticated");
+  }, []);
 
   const logout = useCallback(async () => {
     try {
@@ -125,8 +133,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const value = useMemo<AuthState>(
-    () => ({ status, user, tenant, login, register, logout }),
-    [status, user, tenant, login, register, logout],
+    () => ({ status, user, tenant, login, register, verify, logout }),
+    [status, user, tenant, login, register, verify, logout],
   );
 
   return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>;

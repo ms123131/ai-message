@@ -1,12 +1,19 @@
 import { useState, type FormEvent } from "react";
-import { Link, Navigate, useNavigate } from "react-router-dom";
-import { Loader2, MessageSquareText } from "lucide-react";
+import { Link, Navigate } from "react-router-dom";
+import { Loader2, MailCheck } from "lucide-react";
 import { useAuth } from "../lib/auth";
-import { ApiError } from "../lib/api";
+import { api, ApiError } from "../lib/api";
+import {
+  AuthShell,
+  authButtonClass,
+  authErrorClass,
+  authInputClass,
+} from "../components/AuthShell";
+
+const RESEND_COOLDOWN_SEC = 60;
 
 export function RegisterPage() {
   const { status, register } = useAuth();
-  const nav = useNavigate();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -14,27 +21,42 @@ export function RegisterPage() {
   const [workspace, setWorkspace] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  // После успешной регистрации показываем экран «проверьте почту».
+  const [sentTo, setSentTo] = useState<string | null>(null);
+  const [resendLeft, setResendLeft] = useState(0);
 
   if (status === "authenticated") return <Navigate to="/dashboard" replace />;
+
+  function startCooldown() {
+    setResendLeft(RESEND_COOLDOWN_SEC);
+    const timer = setInterval(() => {
+      setResendLeft((s) => {
+        if (s <= 1) {
+          clearInterval(timer);
+          return 0;
+        }
+        return s - 1;
+      });
+    }, 1000);
+  }
 
   async function onSubmit(e: FormEvent) {
     e.preventDefault();
     setError(null);
     setSubmitting(true);
     try {
-      await register({
+      const resp = await register({
         email,
         password,
         full_name: fullName || undefined,
         workspace_name: workspace || undefined,
       });
-      nav("/dashboard", { replace: true });
+      setSentTo(resp.email);
+      startCooldown();
     } catch (err) {
       if (err instanceof ApiError) {
         setError(
-          err.status === 409
-            ? "Этот email уже зарегистрирован"
-            : err.message,
+          err.status === 409 ? "Этот email уже зарегистрирован" : err.message,
         );
       } else {
         setError("Не удалось зарегистрироваться");
@@ -44,76 +66,108 @@ export function RegisterPage() {
     }
   }
 
-  return (
-    <div className="grid min-h-screen place-items-center bg-slate-50 p-6">
-      <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
-        <div className="mb-6 flex items-center gap-2">
-          <div className="grid h-9 w-9 place-items-center rounded-md bg-brand-600 text-white">
-            <MessageSquareText className="h-5 w-5" />
+  async function onResend() {
+    if (!sentTo || resendLeft > 0) return;
+    try {
+      await api.resendVerification(sentTo);
+    } catch {
+      // ответ обезличен — даже при ошибке не раскрываем деталей
+    }
+    startCooldown();
+  }
+
+  if (sentTo) {
+    return (
+      <AuthShell
+        title="Проверьте почту"
+        subtitle={
+          <>
+            Мы отправили письмо со ссылкой подтверждения на{" "}
+            <span className="font-medium text-slate-700">{sentTo}</span>.
+            Перейдите по ссылке из письма, чтобы завершить регистрацию и войти.
+          </>
+        }
+        footer={
+          <Link to="/login" className="text-brand-600 hover:underline">
+            Вернуться ко входу
+          </Link>
+        }
+      >
+        <div className="flex flex-col items-center gap-4 py-2">
+          <div className="grid h-12 w-12 place-items-center rounded-full bg-brand-50 text-brand-600">
+            <MailCheck className="h-6 w-6" />
           </div>
-          <div className="text-lg font-semibold tracking-tight">ai-message</div>
-        </div>
-        <h1 className="mb-1 text-base font-semibold text-slate-800">
-          Создание аккаунта
-        </h1>
-        <p className="mb-5 text-sm text-slate-500">
-          Создадим ваше рабочее пространство и привяжем к нему подключения.
-        </p>
-        <form className="space-y-3" onSubmit={onSubmit}>
-          <input
-            type="text"
-            placeholder="Имя (необязательно)"
-            value={fullName}
-            onChange={(e) => setFullName(e.target.value)}
-            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500"
-          />
-          <input
-            type="text"
-            placeholder="Название workspace (необязательно)"
-            value={workspace}
-            onChange={(e) => setWorkspace(e.target.value)}
-            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500"
-          />
-          <input
-            type="email"
-            autoComplete="email"
-            required
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500"
-          />
-          <input
-            type="password"
-            autoComplete="new-password"
-            required
-            minLength={8}
-            placeholder="Пароль (минимум 8 символов)"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className="w-full rounded-md border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500"
-          />
-          {error && (
-            <div className="rounded-md border border-rose-200 bg-rose-50 px-3 py-2 text-xs text-rose-700">
-              {error}
-            </div>
-          )}
+          <p className="text-center text-xs text-slate-500">
+            Не пришло письмо? Проверьте папку «Спам».
+          </p>
           <button
-            type="submit"
-            disabled={submitting}
-            className="flex w-full items-center justify-center gap-2 rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white shadow-sm transition hover:bg-brand-700 disabled:cursor-not-allowed disabled:bg-slate-300"
+            type="button"
+            onClick={onResend}
+            disabled={resendLeft > 0}
+            className={authButtonClass}
           >
-            {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
-            Создать аккаунт
+            {resendLeft > 0
+              ? `Отправить повторно (${resendLeft})`
+              : "Отправить письмо повторно"}
           </button>
-        </form>
-        <p className="mt-4 text-center text-xs text-slate-500">
+        </div>
+      </AuthShell>
+    );
+  }
+
+  return (
+    <AuthShell
+      title="Создание аккаунта"
+      subtitle="Создадим ваше рабочее пространство и привяжем к нему подключения."
+      footer={
+        <>
           Уже есть аккаунт?{" "}
           <Link to="/login" className="text-brand-600 hover:underline">
             Войти
           </Link>
-        </p>
-      </div>
-    </div>
+        </>
+      }
+    >
+      <form className="space-y-3" onSubmit={onSubmit}>
+        <input
+          type="text"
+          placeholder="Имя (необязательно)"
+          value={fullName}
+          onChange={(e) => setFullName(e.target.value)}
+          className={authInputClass}
+        />
+        <input
+          type="text"
+          placeholder="Название workspace (необязательно)"
+          value={workspace}
+          onChange={(e) => setWorkspace(e.target.value)}
+          className={authInputClass}
+        />
+        <input
+          type="email"
+          autoComplete="email"
+          required
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className={authInputClass}
+        />
+        <input
+          type="password"
+          autoComplete="new-password"
+          required
+          minLength={8}
+          placeholder="Пароль (минимум 8 символов)"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className={authInputClass}
+        />
+        {error && <div className={authErrorClass}>{error}</div>}
+        <button type="submit" disabled={submitting} className={authButtonClass}>
+          {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
+          Создать аккаунт
+        </button>
+      </form>
+    </AuthShell>
   );
 }
