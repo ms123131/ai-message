@@ -168,6 +168,28 @@ class Settings(BaseSettings):
     # ограничивает суммарное время попыток.
     telegram_qr_ttl_sec: int = 300
 
+    # --- Транзакционная почта (SMTP) ---
+    # Отправка писем подтверждения email и сброса пароля. Транспорт —
+    # провайдер-агностичный SMTP (Яндекс/ESP), приложение знает только креды.
+    # Если smtp_host пуст — отправка отключена (письма логируются и
+    # пропускаются), API/регистрация продолжают работать. Это безопасный
+    # дефолт для dev/test, аналогично null-режиму LLM.
+    smtp_host: str | None = Field(default=None)
+    smtp_port: int = 465
+    # ssl — неявный TLS (порт 465); starttls — апгрейд на 587; none — без TLS.
+    smtp_tls_mode: str = "ssl"
+    smtp_user: str | None = Field(default=None)
+    smtp_password: str | None = Field(default=None)
+    # Адрес и имя отправителя. Если email_from пуст — берём smtp_user.
+    email_from: str | None = Field(default=None)
+    email_from_name: str = "ai-message"
+    # Базовый URL фронтенда — из него строятся ссылки verify/reset в письмах.
+    # В проде https://app.77ais.ru, локально — Vite dev-сервер.
+    app_base_url: str = "http://localhost:5173"
+    # TTL одноразовых токенов из письма.
+    email_verify_ttl_hours: int = 24
+    email_reset_ttl_hours: int = 2
+
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]

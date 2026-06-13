@@ -1,0 +1,170 @@
+# Web (nginx, два сайта в одном образе). Конфиг переопределяем через ConfigMap:
+# в k8s другой DNS, чем Docker embedded. Отличия от apps/web/nginx.conf:
+#   - resolver 10.96.0.10 (ClusterIP CoreDNS) вместо 127.0.0.11;
+#   - upstream по FQDN api.ai-message.svc.cluster.local (nginx-resolver
+#     не применяет search-домены из resolv.conf, короткого `api` мало).
+# Разделение по Host: 77ais.ru → лендинг, app.77ais.ru → SPA + backend.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: web-nginx-conf
+  namespace: ai-message
+data:
+  default.conf: |
+    resolver 10.96.0.10 valid=10s ipv6=off;
+
+    # ── Лендинг: 77ais.ru (default_server) ──────────────────────────────
+    server {
+        listen 80 default_server;
+        server_name 77ais.ru;
+        root /usr/share/nginx/html/marketing;
+        index index.html;
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        location /assets/ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            try_files $uri =404;
+        }
+
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), usb=()" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'" always;
+
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1024;
+        gzip_types text/plain text/css application/json application/javascript text/xml application/xml text/javascript image/svg+xml;
+    }
+
+    # ── Приложение: app.77ais.ru ────────────────────────────────────────
+    server {
+        listen 80;
+        server_name app.77ais.ru;
+        root /usr/share/nginx/html/app;
+        index index.html;
+
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+
+        set $api_backend "http://api.ai-message.svc.cluster.local:8000";
+
+        location /api/ {
+            proxy_pass         $api_backend;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_set_header   X-Forwarded-Proto $scheme;
+            proxy_read_timeout 60s;
+            proxy_connect_timeout 5s;
+        }
+
+        location /webhooks/ {
+            rewrite ^/webhooks/(.*)$ /api/v1/webhooks/$1 break;
+            proxy_pass         $api_backend;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            client_max_body_size 5m;
+        }
+
+        location /install/ {
+            rewrite ^/install/(.*)$ /api/v1/install/$1 break;
+            proxy_pass         $api_backend;
+            proxy_http_version 1.1;
+            proxy_set_header   Host              $host;
+            proxy_set_header   X-Real-IP         $remote_addr;
+            proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+            proxy_hide_header  X-Frame-Options;
+            proxy_hide_header  Content-Security-Policy;
+            add_header         X-Frame-Options "ALLOWALL" always;
+            add_header         Content-Security-Policy "frame-ancestors https://*.bitrix24.ru https://*.bitrix24.com https://*.bitrix24.by https://*.bitrix24.kz https://*.bitrix24.eu https://*.bitrix24.de" always;
+        }
+
+        location /assets/ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+            try_files $uri =404;
+        }
+
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Permissions-Policy "geolocation=(), microphone=(), camera=(), payment=(), usb=()" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self' data:; connect-src 'self'; frame-ancestors 'self'; base-uri 'self'; form-action 'self'; object-src 'none'" always;
+
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1024;
+        gzip_types text/plain text/css application/json application/javascript text/xml application/xml text/javascript;
+    }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: ai-message
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      imagePullSecrets:
+        - name: registry-cred
+      containers:
+        - name: web
+          image: ai-mesaas.cr.cloud.ru/ai-message-web:latest
+          ports:
+            - containerPort: 80
+          volumeMounts:
+            - name: nginx-conf
+              mountPath: /etc/nginx/conf.d/default.conf
+              subPath: default.conf
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 80
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 300m
+              memory: 256Mi
+      volumes:
+        - name: nginx-conf
+          configMap:
+            name: web-nginx-conf
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: ai-message
+spec:
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 80

@@ -39,3 +39,6 @@ Thumbs.db
 
 # Local dev overrides for docker compose
 compose.override.yml
+
+# k8s: реальный секрет с production-значениями (в репо только *.example.yaml)
+infra/k8s/02-secret.yaml

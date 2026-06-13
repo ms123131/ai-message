@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -21,14 +21,50 @@ from app.auth.security import (
     hash_password,
     verify_password,
 )
+from app.config import get_settings
 from app.db import get_session
-from app.db.models import Tenant, User, UserRole
+from app.db.models import AuthTokenType, Tenant, User, UserRole
+from app.email.tokens import consume_token, issue_token
 from app.security.audit import write_audit
 from app.security.ratelimit import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
 REFRESH_COOKIE = "ai_refresh"
+
+
+async def _issue_and_send_verification(session: AsyncSession, user: User) -> None:
+    """Создаёт verify-токен (в переданной сессии, без commit) и ставит письмо
+    в arq-очередь. Commit — на стороне вызывающего (токен попадёт в БД одной
+    транзакцией с регистрацией)."""
+    from app.workers.redis_pool import get_pool
+
+    settings = get_settings()
+    raw = await issue_token(
+        session, user.id, AuthTokenType.verify,
+        timedelta(hours=settings.email_verify_ttl_hours),
+    )
+    url = f"{settings.app_base_url.rstrip('/')}/verify?token={raw}"
+    pool = await get_pool()
+    await pool.enqueue_job(
+        "send_verification_email", to=user.email, user_name=user.full_name, verify_url=url
+    )
+
+
+async def _issue_and_send_reset(session: AsyncSession, user: User) -> None:
+    """Создаёт reset-токен (без commit) и ставит письмо сброса пароля в очередь."""
+    from app.workers.redis_pool import get_pool
+
+    settings = get_settings()
+    raw = await issue_token(
+        session, user.id, AuthTokenType.reset,
+        timedelta(hours=settings.email_reset_ttl_hours),
+    )
+    url = f"{settings.app_base_url.rstrip('/')}/reset-password?token={raw}"
+    pool = await get_pool()
+    await pool.enqueue_job(
+        "send_password_reset_email", to=user.email, user_name=user.full_name, reset_url=url
+    )
 
 
 class RegisterIn(BaseModel):
@@ -66,6 +102,27 @@ class AuthResponse(BaseModel):
     tenant: TenantOut
 
 
+class RegisterResponse(BaseModel):
+    """Ответ регистрации при Hard-confirm: access_token НЕ выдаётся,
+    пользователю нужно подтвердить email из письма."""
+
+    requires_verification: bool = True
+    email: str
+
+
+class VerifyIn(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+
+
+class EmailIn(BaseModel):
+    email: EmailStr
+
+
+class ResetIn(BaseModel):
+    token: str = Field(min_length=1, max_length=512)
+    password: str = Field(min_length=8, max_length=200)
+
+
 def _set_refresh_cookie(response: Response, token: str) -> None:
     from app.config import get_settings
 
@@ -87,14 +144,13 @@ def _clear_refresh_cookie(response: Response) -> None:
     response.delete_cookie(key=REFRESH_COOKIE, path="/api/v1/auth")
 
 
-@router.post("/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=RegisterResponse, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/minute")
 async def register(
     request: Request,  # noqa: ARG001 — нужен slowapi для key_func
     body: RegisterIn,
-    response: Response,
     session: AsyncSession = Depends(get_session),
-) -> AuthResponse:
+) -> RegisterResponse:
     # Уникальность email — на уровне БД (unique-индекс).
     existing = await session.execute(select(User).where(User.email == body.email.lower()))
     if existing.scalar_one_or_none():
@@ -114,25 +170,20 @@ async def register(
         password_hash=hash_password(body.password),
         full_name=body.full_name,
         role=UserRole.admin,
+        # email_verified_at=None — Hard-confirm: логин закрыт до подтверждения.
     )
     session.add(user)
+    await session.flush()  # user должен существовать до вставки FK-токена
+    # Verify-токен создаётся в той же транзакции, что и пользователь.
+    await _issue_and_send_verification(session, user)
     try:
         await session.commit()
     except IntegrityError as exc:
         await session.rollback()
         raise HTTPException(status_code=409, detail="Email already registered") from exc
 
-    await session.refresh(user)
-    await session.refresh(tenant)
-
-    access = create_access_token(user.id, tenant.id)
-    refresh = create_refresh_token(user.id, tenant.id)
-    _set_refresh_cookie(response, refresh)
-    return AuthResponse(
-        access_token=access,
-        user=UserOut.model_validate(user),
-        tenant=TenantOut.model_validate(tenant),
-    )
+    # access_token НЕ выдаём и refresh-cookie не ставим — сначала подтверждение.
+    return RegisterResponse(requires_verification=True, email=user.email)
 
 
 @router.post("/login", response_model=AuthResponse)
@@ -158,6 +209,11 @@ async def login(
         await session.commit()
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
+    # Hard-confirm: вход закрыт, пока email не подтверждён. Код в detail —
+    # чтобы фронт отличил эту ситуацию и предложил переслать письмо.
+    if user.email_verified_at is None:
+        raise HTTPException(status_code=403, detail="email_not_verified")
+
     tenant = await session.get(Tenant, user.tenant_id)
     access = create_access_token(user.id, user.tenant_id)
     refresh = create_refresh_token(user.id, user.tenant_id)
@@ -167,6 +223,109 @@ async def login(
         user=UserOut.model_validate(user),
         tenant=TenantOut.model_validate(tenant),
     )
+
+
+@router.post("/verify", response_model=AuthResponse)
+@limiter.limit("10/minute")
+async def verify(
+    request: Request,  # noqa: ARG001 — нужен slowapi для key_func
+    body: VerifyIn,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> AuthResponse:
+    """Подтверждает email по токену из письма и сразу авторизует пользователя
+    (выдаёт access_token + refresh-cookie) — лишний логин после клика не нужен."""
+    user_id = await consume_token(session, body.token, AuthTokenType.verify)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    if user.email_verified_at is None:
+        user.email_verified_at = datetime.now(UTC)
+    await write_audit(
+        session, action="auth.email_verified",
+        tenant_id=user.tenant_id, user_id=user.id, request=request,
+    )
+    await session.commit()
+
+    tenant = await session.get(Tenant, user.tenant_id)
+    access = create_access_token(user.id, user.tenant_id)
+    refresh_token = create_refresh_token(user.id, user.tenant_id)
+    _set_refresh_cookie(response, refresh_token)
+    return AuthResponse(
+        access_token=access,
+        user=UserOut.model_validate(user),
+        tenant=TenantOut.model_validate(tenant),
+    )
+
+
+@router.post("/resend-verification", status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit("1/minute")
+async def resend_verification(
+    request: Request,  # noqa: ARG001 — нужен slowapi для key_func
+    body: EmailIn,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """Повторно шлёт письмо подтверждения. Ответ всегда одинаковый — не
+    раскрываем, зарегистрирован ли адрес и подтверждён ли он."""
+    result = await session.execute(select(User).where(User.email == body.email.lower()))
+    user = result.scalar_one_or_none()
+    if user is not None and user.email_verified_at is None:
+        await _issue_and_send_verification(session, user)
+        await session.commit()
+    return {"status": "accepted"}
+
+
+@router.post("/forgot-password", status_code=status.HTTP_202_ACCEPTED)
+@limiter.limit("3/minute")
+async def forgot_password(
+    request: Request,  # noqa: ARG001 — нужен slowapi для key_func
+    body: EmailIn,
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, str]:
+    """Шлёт письмо со ссылкой сброса пароля. Ответ всегда одинаковый, чтобы
+    нельзя было перебором узнать, какие адреса зарегистрированы."""
+    result = await session.execute(select(User).where(User.email == body.email.lower()))
+    user = result.scalar_one_or_none()
+    if user is not None:
+        await _issue_and_send_reset(session, user)
+        await session.commit()
+    return {"status": "accepted"}
+
+
+@router.post("/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("10/minute")
+async def reset_password(
+    request: Request,
+    body: ResetIn,
+    response: Response,
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Меняет пароль по reset-токену. Заодно подтверждает email (владение
+    ящиком доказано) и чистит refresh-cookie в текущем браузере. NB: JWT
+    stateless — refresh-токены, уже выданные на другие устройства, продолжат
+    работать до истечения TTL (серверного denylist пока нет, см. TODO)."""
+    user_id = await consume_token(session, body.token, AuthTokenType.reset)
+    if user_id is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+
+    user = await session.get(User, user_id)
+    if user is None:
+        raise HTTPException(status_code=400, detail="Invalid or expired token")
+    user.password_hash = hash_password(body.password)
+    if user.email_verified_at is None:
+        user.email_verified_at = datetime.now(UTC)
+    await write_audit(
+        session, action="auth.password_reset",
+        tenant_id=user.tenant_id, user_id=user.id, request=request,
+    )
+    await session.commit()
+
+    _clear_refresh_cookie(response)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
 
 
 @router.post("/refresh", response_model=AuthResponse)

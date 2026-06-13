@@ -3,6 +3,9 @@ import react from "@vitejs/plugin-react";
 import path from "node:path";
 
 export default defineConfig({
+  // Приложение живёт на корне поддомена app.77ais.ru, лендинг — на 77ais.ru.
+  // base="/" по умолчанию: ассеты грузятся с /assets/ (nginx server app.77ais.ru
+  // имеет root .../app, так что /assets/ резолвится внутри SPA-папки).
   plugins: [react()],
   resolve: {
     alias: {

@@ -20,6 +20,10 @@ from app.workers.tasks.bitrix_import import run_import_job_task
 from app.workers.tasks.bitrix_poll import dispatch_poll, poll_integration
 from app.workers.tasks.conversation_enrich import enrich_conversation_from_chat
 from app.workers.tasks.crm_sync import dispatch_crm_sync, sync_crm_for_integration
+from app.workers.tasks.email import (
+    send_password_reset_email,
+    send_verification_email,
+)
 from app.workers.tasks.embeddings import embed_messages_for_integration
 from app.workers.tasks.entities import analyze_entities_for_integration
 from app.workers.tasks.nlp_cron import nlp_dispatch_cron
@@ -61,6 +65,8 @@ class WorkerSettings:
         embed_messages_for_integration,
         summarize_conversation_task,
         nlp_dispatch_cron,
+        send_verification_email,
+        send_password_reset_email,
     ]
     # Авто-запуск sentiment+tags по cron, если включено в env.
     # arq.cron поддерживает поминутный интервал — собираем set минут вида

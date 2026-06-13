@@ -1,0 +1,48 @@
+# Внешний вход: ingress-nginx (LB 37.44.197.28) → Service web:80.
+# Оба хоста идут на один Service web; внутренний nginx разводит их по Host:
+#   77ais.ru     → лендинг, app.77ais.ru → SPA + /api,/webhooks,/install (см. 30-web.yaml).
+# TLS-сертификаты выпускает cert-manager через ClusterIssuer letsencrypt-prod
+# (HTTP-01 challenge).
+#
+# ПЕРЕД применением: A-записи 77ais.ru И app.77ais.ru -> 37.44.197.28 должны
+# резолвиться, иначе Let's Encrypt не пройдёт HTTP-01.
+# ВНИМАНИЕ: host 77ais.ru ранее обслуживал ingress study/web — его нужно
+# удалить, иначе два Ingress спорят за один host.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-message
+  namespace: ai-message
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    # Webhook'и Bitrix24 могут нести вложения — поднимаем лимит тела (как
+    # client_max_body_size 5m во внутреннем nginx).
+    nginx.ingress.kubernetes.io/proxy-body-size: "5m"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - 77ais.ru
+        - app.77ais.ru
+      secretName: app-77ais-tls
+  rules:
+    - host: 77ais.ru
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80
+    - host: app.77ais.ru
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 80

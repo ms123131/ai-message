@@ -63,11 +63,57 @@ class User(Base):
         default=UserRole.member,
         nullable=False,
     )
+    # NULL = email ещё не подтверждён. Логин блокируется, пока не проставлено
+    # (см. Hard-confirm в api/v1/auth.py).
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     tenant: Mapped["Tenant"] = relationship(back_populates="users")
+
+
+class AuthTokenType(str, Enum):
+    verify = "verify"
+    reset = "reset"
+
+
+class AuthToken(Base):
+    """Одноразовый токен для подтверждения email и сброса пароля.
+
+    В БД храним только sha256-хэш токена (token_hash) — сырой токен живёт
+    лишь в ссылке письма. Используется один раз: при погашении проставляется
+    used_at, повторно не действует.
+    """
+
+    __tablename__ = "auth_tokens"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    type: Mapped[AuthTokenType] = mapped_column(
+        SAEnum(AuthTokenType, name="auth_token_type"),
+        nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index("ix_auth_tokens_user_type", "user_id", "type"),
+    )
 
 
 class IntegrationKind(str, Enum):

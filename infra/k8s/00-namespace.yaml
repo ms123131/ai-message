@@ -1,0 +1,8 @@
+# Отдельный namespace для всего стека ai-message — изоляция от учебных
+# ресурсов (ns study) и удобный `kubectl -n ai-message ...`.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ai-message
+  labels:
+    app.kubernetes.io/part-of: ai-message

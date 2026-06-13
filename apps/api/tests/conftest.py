@@ -84,7 +84,28 @@ async def client():
             },
         )
         assert resp.status_code == 201, resp.text
-        token = resp.json()["access_token"]
+        # Hard-confirm: регистрация не выдаёт токен. Подтверждаем email напрямую
+        # в БД (минуя письмо) и логинимся, чтобы получить bearer-токен.
+        from datetime import UTC, datetime
+
+        from sqlalchemy import update
+
+        from app.db.models import User
+        from app.db.session import AsyncSessionLocal
+
+        async with AsyncSessionLocal() as session:
+            await session.execute(
+                update(User)
+                .where(User.email == "tester@example.com")
+                .values(email_verified_at=datetime.now(UTC))
+            )
+            await session.commit()
+        login = await ac.post(
+            "/api/v1/auth/login",
+            json={"email": "tester@example.com", "password": "test-password-123"},
+        )
+        assert login.status_code == 200, login.text
+        token = login.json()["access_token"]
         ac.headers["Authorization"] = f"Bearer {token}"
         yield ac
 

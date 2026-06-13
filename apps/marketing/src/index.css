@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Объявляем keyframes здесь, а не в tailwind.config: Tailwind кладёт
+   @keyframes в бандл только если используется утилита animate-*, а мы
+   ссылаемся на анимацию из своего класса .reveal. Без этого блока секции
+   остаются opacity:0 и не появляются. */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    /* Якоря из навигации не должны прятаться под sticky-шапкой. */
+    scroll-padding-top: 5rem;
+  }
+  body {
+    /* Те же стилистические альтернаты Inter, что и в приложении. */
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+}
+
+@layer components {
+  /* Тонкая сетка-подложка для hero: задаёт «инженерную» атмосферу
+     дашборда без тяжёлых градиентов. Цвет — почти невидимый slate. */
+  .bg-grid {
+    background-image:
+      linear-gradient(to right, rgb(15 23 42 / 0.04) 1px, transparent 1px),
+      linear-gradient(to bottom, rgb(15 23 42 / 0.04) 1px, transparent 1px);
+    background-size: 48px 48px;
+  }
+
+  /* Reveal-обёртка: до появления в зоне видимости скрыта и чуть смещена,
+     при data-visible="true" проигрывается fade-up. Управляет useReveal. */
+  .reveal {
+    opacity: 0;
+  }
+  .reveal[data-visible="true"] {
+    animation: fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+  }
+
+  /* Уважение к prefers-reduced-motion: без анимаций, контент сразу виден. */
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+    .reveal {
+      opacity: 1;
+      animation: none !important;
+    }
+  }
+}

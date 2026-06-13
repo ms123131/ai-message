@@ -1,0 +1,52 @@
+# Несекретная конфигурация. Имена ключей повторяют переменные окружения из
+# compose.yml — приложение читает их напрямую (pydantic-settings, app/config.py).
+# Секреты вынесены в Secret (см. 02-secret.example.yaml).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ai-message-config
+  namespace: ai-message
+data:
+  APP_ENV: "production"
+
+  # Реквизиты postgres (имя пользователя/БД). Пароль — в Secret; полный
+  # DATABASE_URL (с паролем) тоже собран в Secret.
+  POSTGRES_USER: "aimessage"
+  POSTGRES_DB: "aimessage"
+
+  # Redis внутри кластера, без пароля (доступ ограничен сетью namespace).
+  REDIS_URL: "redis://redis:6379/0"
+
+  # Фронт ходит на тот же origin через ingress, но бэкенд валидирует Origin.
+  CORS_ORIGINS: "https://app.77ais.ru"
+  WEBHOOK_BASE_URL: "https://app.77ais.ru"
+
+  # Bitrix24: client_id — публичный идентификатор приложения (не секрет),
+  # client_secret — в Secret.
+  BITRIX24_APP_CLIENT_ID: "local.6a09ef866cbe83.16916660"
+
+  # LLM-провайдеры (Groq). Модели/базовые URL несекретные; API-ключи — в Secret.
+  LLM_FAST_PROVIDER: "Groq"
+  LLM_FAST_MODEL: "llama-3.1-8b-instant"
+  LLM_FAST_BASE_URL: ""
+  LLM_SMART_PROVIDER: "Groq"
+  LLM_SMART_MODEL: "llama-3.1-8b-instant"
+  LLM_SMART_BASE_URL: ""
+
+  # Personal Telegram (MTProto). api_id — числовой идентификатор приложения
+  # Telegram (не секрет); api_hash — в Secret.
+  TELEGRAM_API_ID: "30790788"
+
+  # Параметры опроса Bitrix24 воркером.
+  BITRIX24_POLL_INTERVAL_SEC: "30"
+  BITRIX24_POLL_WINDOW_DAYS: "1"
+  BITRIX24_CRM_SYNC_INTERVAL_SEC: "300"
+
+  # Транзакционная почта (verify/reset). Хост/порт/режим TLS и отправитель —
+  # несекретные; SMTP_USER и SMTP_PASSWORD — в Secret.
+  SMTP_HOST: "smtp.yandex.ru"
+  SMTP_PORT: "465"
+  SMTP_TLS_MODE: "ssl"
+  EMAIL_FROM_NAME: "ai-message"
+  # Базовый URL фронта — из него строятся ссылки в письмах.
+  APP_BASE_URL: "https://app.77ais.ru"

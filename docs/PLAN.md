@@ -359,23 +359,40 @@ per-message раскраска в просмотре диалога.
 
 ---
 
-## Фаза 7 — Деплой и инфраструктура
+## Фаза 7 — Деплой и инфраструктура (частично ✅ — переехали в Kubernetes)
 
-- [ ] **Выбрать хостинг**: Yandex Cloud / VK Cloud / self-hosted VPS (Docker Desktop — только для локальной разработки)
-- [ ] TLS (Caddy или traefik) перед nginx
-- [ ] Бэкапы Postgres в S3-совместимое хранилище (`pg_dump` по cron)
-- [ ] Логи: Loki + Grafana или агрегатор провайдера
+> Обновлено 2026-06-13: вместо Docker Compose на VPS проект развёрнут в
+> **Cloud.ru Evolution Managed Kubernetes**. Манифесты — `infra/k8s/`.
+> Подробный план дальнейшей k8s-эволюции — `docs/planApp.md` (трек «Инфраструктура»).
+
+- [x] **Хостинг выбран**: Cloud.ru Managed K8s (v1.35, Cilium). Все сервисы
+  (api/worker/web/postgres/redis) — Deployment'ы в ns `ai-message`, образы
+  в реестре `ai-mesaas.cr.cloud.ru`, собираются Kaniko-Job'ами в кластере.
+- [x] **TLS**: ingress-nginx + cert-manager (ClusterIssuer letsencrypt-prod),
+  один сертификат на `77ais.ru` (лендинг) + `app.77ais.ru` (приложение).
+- [ ] Бэкапы Postgres в S3-совместимое хранилище (CronJob `pg_dump` → S3)
+- [ ] Логи: Loki + Grafana (или агрегатор Cloud.ru)
 - [ ] Метрики: Prometheus exporter в FastAPI (`prometheus-fastapi-instrumentator`)
+      + ServiceMonitor / kube-prometheus-stack
 - [ ] Sentry для ошибок FE и BE
-- [ ] Доработать `.github/workflows/deploy.yml` под выбранный хостинг (SSH + `docker compose pull/up` или push в GHCR)
+- [ ] CI/CD в k8s: `.github/workflows/deploy.yml` — сборка/пуш образа +
+      `kubectl set image` / Argo CD (GitOps)
+- [ ] Production-харднинг кластера: HPA, PodDisruptionBudget, NetworkPolicy,
+      resource limits-аудит, CPU-only torch (образ api раздут до ~5-6 ГБ зря)
 
 ---
 
-## Маркетинговый сайт
+## Маркетинговый сайт ✅ (реализован 2026-06-13)
 
-См. [`docs/SITE_PLAN.md`](./SITE_PLAN.md) — отдельный план под
-одностраничный лендинг (одностраничник на корне `/`, текущий SPA
-переезжает на `/app`). Контент — хардкод в исходниках, без CMS.
+См. [`docs/SITE_PLAN.md`](./SITE_PLAN.md) — план лендинга. Реализован пакет
+`apps/marketing` (Vite+React+Tailwind, единый бренд с SPA). **Схема изменена
+относительно плана**: не path-based (`/` + `/app`), а по поддоменам —
+`77ais.ru` → лендинг, `app.77ais.ru` → приложение (SPA на корне). Один
+nginx-образ обслуживает оба сайта, разводя по `Host`. SPA остался на корне
+своего поддомена (перенос на `/app` не понадобился). Скриншоты продукта —
+пока CSS-мокапы, заменяемые на реальные `.webp`.
+
+Дальнейшее развитие приложения — [`docs/planApp.md`](./planApp.md).
 
 ---
 
