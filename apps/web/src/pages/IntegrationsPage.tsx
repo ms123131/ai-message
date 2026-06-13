@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ComponentType } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
 import {
@@ -12,6 +12,8 @@ import {
   Webhook,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
+import { Bitrix24Icon } from "../components/icons/Bitrix24Icon";
+import { WhatsAppIcon } from "../components/icons/WhatsAppIcon";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/Button";
 import { ConfirmDialog } from "../components/ui/Dialog";
@@ -27,7 +29,7 @@ type CatalogItem = {
   available: boolean;
   priority?: boolean;
   badge?: string;
-  icon?: LucideIcon;
+  icon?: ComponentType<{ className?: string }>;
   route?: string;
 };
 
@@ -38,6 +40,7 @@ const catalog: CatalogItem[] = [
     description: "CRM + Open Channels (WhatsApp, Telegram, ВК, виджет сайта)",
     available: true,
     priority: true,
+    icon: Bitrix24Icon,
     route: "/integrations/bitrix24/new",
   },
   {
@@ -61,7 +64,7 @@ const catalog: CatalogItem[] = [
     name: "WhatsApp (личный)",
     description: "Подключение через сканирование QR (multi-device)",
     available: false,
-    icon: QrCode,
+    icon: WhatsAppIcon,
   },
   {
     id: "email",

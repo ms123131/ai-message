@@ -1,5 +1,5 @@
 import { type ReactNode } from "react";
-import { MessageSquareText } from "lucide-react";
+import { BrandMark } from "./icons/BrandMark";
 
 // Общий каркас экранов аутентификации: центрированная карточка с логотипом.
 // Используется страницами login/register/verify/forgot/reset.
@@ -19,7 +19,7 @@ export function AuthShell({
       <div className="w-full max-w-sm rounded-xl border border-slate-200 bg-white p-8 shadow-sm">
         <div className="mb-6 flex items-center gap-2">
           <div className="grid h-9 w-9 place-items-center rounded-md bg-brand-600 text-white">
-            <MessageSquareText className="h-5 w-5" />
+            <BrandMark className="h-5 w-5" />
           </div>
           <div className="text-lg font-semibold tracking-tight">ai-message</div>
         </div>

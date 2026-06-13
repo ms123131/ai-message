@@ -3,10 +3,11 @@ import {
   LayoutDashboard,
   Inbox,
   Plug,
-  Settings,
-  MessageSquareText,
+  SlidersHorizontal,
+  CircleUserRound,
   LogOut,
 } from "lucide-react";
+import { BrandMark } from "./icons/BrandMark";
 import { cn } from "../lib/cn";
 import { useAuth } from "../lib/auth";
 
@@ -14,7 +15,7 @@ const nav = [
   { to: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
   { to: "/inbox", label: "Диалоги", icon: Inbox },
   { to: "/integrations", label: "Интеграции", icon: Plug },
-  { to: "/settings", label: "Настройки", icon: Settings },
+  { to: "/settings", label: "Настройки", icon: SlidersHorizontal },
 ];
 
 export function AppLayout() {
@@ -31,7 +32,7 @@ export function AppLayout() {
       <aside className="flex w-60 shrink-0 flex-col border-r border-slate-200 bg-white">
         <div className="flex items-center gap-2 border-b border-slate-200 px-5 py-4">
           <div className="grid h-8 w-8 place-items-center rounded-md bg-brand-600 text-white">
-            <MessageSquareText className="h-5 w-5" />
+            <BrandMark className="h-5 w-5" />
           </div>
           <div className="min-w-0">
             <div className="truncate font-semibold tracking-tight">
@@ -65,11 +66,14 @@ export function AppLayout() {
         </nav>
         {user && (
           <div className="border-t border-slate-200 p-3">
-            <div className="mb-2 px-1 text-xs">
-              <div className="truncate font-medium text-slate-700">
-                {user.full_name || user.email}
+            <div className="mb-2 flex items-center gap-2 px-1 text-xs">
+              <CircleUserRound className="h-7 w-7 shrink-0 text-slate-400" />
+              <div className="min-w-0">
+                <div className="truncate font-medium text-slate-700">
+                  {user.full_name || user.email}
+                </div>
+                <div className="truncate text-slate-400">{user.email}</div>
               </div>
-              <div className="truncate text-slate-400">{user.email}</div>
             </div>
             <button
               onClick={handleLogout}
