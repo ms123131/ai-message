@@ -8,6 +8,7 @@ from app.api.v1 import (
     install,
     integrations,
     integrations_telegram_user,
+    settings,
     sla_targets,
     system,
     webhooks,
@@ -21,6 +22,7 @@ api_router.include_router(integrations_telegram_user.router)
 api_router.include_router(conversations.router)
 api_router.include_router(dashboard.router)
 api_router.include_router(sla_targets.router)
+api_router.include_router(settings.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(install.router)
 api_router.include_router(system.router)

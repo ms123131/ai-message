@@ -2002,3 +2002,233 @@ async def dashboard_stats_legacy(
         volume_by_day=volume_by_day,
         by_channel=by_channel_list,
     )
+
+
+# ---------------------------------------------------------------------------
+# /sentiment-timeline — тональность клиентов по дням (+ срез по операторам)
+# ---------------------------------------------------------------------------
+
+
+class SentimentDayPoint(BaseModel):
+    day: date
+    positive: int
+    neutral: int
+    negative: int
+    avg_score: float | None  # +1·pos −1·neg, нормировано на размеченные
+
+
+class SentimentOperatorRow(BaseModel):
+    operator_id: str
+    full_name: str | None
+    avg_score: float | None
+    analyzed_conversations: int
+
+
+class SentimentTimelineResponse(BaseModel):
+    period_days: int
+    points: list[SentimentDayPoint]
+    by_operator: list[SentimentOperatorRow]
+
+
+@router.get("/sentiment-timeline", response_model=SentimentTimelineResponse)
+async def sentiment_timeline(
+    days: int = Query(30, ge=1, le=365),
+    filters: _Filters = Depends(_filters_dep),
+    session: AsyncSession = Depends(get_session),
+) -> SentimentTimelineResponse:
+    """Динамика тональности клиентских сообщений по дням + средний sentiment
+    диалогов в разрезе операторов (для переключателя «по дням / по операторам»
+    на AI-табе). Операторы определяются по агентским сообщениям, как в
+    /by-manager; имена резолвятся из PortalUser."""
+    range_from, _ = _window(days)
+    dialect = session.bind.dialect.name if session.bind else "postgresql"
+
+    base_client = [
+        *filters.conv_filters,
+        Message.sent_at >= range_from,
+        Message.sender_type == SenderType.client,
+        Message.sentiment.is_not(None),
+        not_(or_(*[Message.text.ilike(p) for p in _BITRIX_SYSTEM_LIKES])),
+    ]
+
+    day_expr = _day_expr(Message.sent_at, dialect).label("day")
+    day_rows = (
+        await session.execute(
+            select(
+                day_expr,
+                Message.sentiment,
+                func.count(Message.id),
+            )
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(*base_client)
+            .group_by(day_expr, Message.sentiment)
+        )
+    ).all()
+
+    by_day: dict[str, dict[Sentiment, int]] = {}
+    for day, sentiment, cnt in day_rows:
+        key = str(day)
+        by_day.setdefault(key, {s: 0 for s in Sentiment})
+        by_day[key][sentiment] = int(cnt or 0)
+
+    points: list[SentimentDayPoint] = []
+    for key in sorted(by_day):
+        b = by_day[key]
+        pos, neu, neg = (
+            b[Sentiment.positive],
+            b[Sentiment.neutral],
+            b[Sentiment.negative],
+        )
+        marked = pos + neu + neg
+        points.append(
+            SentimentDayPoint(
+                day=date.fromisoformat(key[:10]),
+                positive=pos,
+                neutral=neu,
+                negative=neg,
+                avg_score=((pos - neg) / marked) if marked else None,
+            )
+        )
+
+    # Срез по операторам: средний Conversation.sentiment_score диалогов, где
+    # оператор (агент) отвечал в окне.
+    op_pairs = (
+        await session.execute(
+            select(
+                Conversation.integration_id,
+                Message.sender_external_id,
+                func.avg(Conversation.sentiment_score),
+                func.count(distinct(Conversation.id)),
+            )
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(
+                *filters.conv_filters,
+                Message.sender_type == SenderType.agent,
+                Message.sender_external_id.is_not(None),
+                Message.sent_at >= range_from,
+                Conversation.sentiment_score.is_not(None),
+            )
+            .group_by(Conversation.integration_id, Message.sender_external_id)
+        )
+    ).all()
+
+    pairs = {(intg, op) for intg, op, _, _ in op_pairs}
+    pu_index: dict[tuple[str, str], PortalUser] = {}
+    if pairs:
+        portal_users = (
+            await session.execute(
+                select(PortalUser).where(
+                    PortalUser.integration_id.in_({p[0] for p in pairs}),
+                    PortalUser.external_id.in_({p[1] for p in pairs}),
+                )
+            )
+        ).scalars().all()
+        pu_index = {(pu.integration_id, pu.external_id): pu for pu in portal_users}
+
+    by_operator = [
+        SentimentOperatorRow(
+            operator_id=op,
+            full_name=(pu_index.get((intg, op)).full_name if pu_index.get((intg, op)) else None),
+            avg_score=float(avg) if avg is not None else None,
+            analyzed_conversations=int(cnt or 0),
+        )
+        for intg, op, avg, cnt in op_pairs
+    ]
+    by_operator.sort(key=lambda r: (r.avg_score if r.avg_score is not None else 0))
+
+    return SentimentTimelineResponse(
+        period_days=days, points=points, by_operator=by_operator
+    )
+
+
+# ---------------------------------------------------------------------------
+# /entities — топ упомянутых сущностей (суммы/города/компании/…)
+# ---------------------------------------------------------------------------
+
+
+class EntityItem(BaseModel):
+    value: str
+    count: int
+
+
+class EntityGroup(BaseModel):
+    kind: str
+    items: list[EntityItem]
+
+
+class EntitiesResponse(BaseModel):
+    period_days: int
+    analyzed_messages: int
+    groups: list[EntityGroup]
+
+
+# Какие типы сущностей показываем и в каком порядке (ключи flat-dict из
+# app/nlp/entities.py). money форматируется в строку «amount currency».
+_ENTITY_KINDS = ["money", "organization", "location", "person", "email", "phone"]
+
+
+@router.get("/entities", response_model=EntitiesResponse)
+async def entities_top(
+    days: int = Query(30, ge=1, le=365),
+    limit: int = Query(10, ge=1, le=50),
+    filters: _Filters = Depends(_filters_dep),
+    session: AsyncSession = Depends(get_session),
+) -> EntitiesResponse:
+    """Топ упомянутых сущностей из Message.entities за период. Агрегация в
+    Python (JSON-поле; портируемо между SQLite/Postgres). Берём клиентские
+    сообщения с разметкой, с ограничением выборки по объёму."""
+    range_from, _ = _window(days)
+
+    rows = (
+        await session.execute(
+            select(Message.entities)
+            .join(Conversation, Conversation.id == Message.conversation_id)
+            .where(
+                *filters.conv_filters,
+                Message.sent_at >= range_from,
+                Message.entities.is_not(None),
+            )
+            .limit(20000)
+        )
+    ).all()
+
+    counters: dict[str, dict[str, int]] = {k: {} for k in _ENTITY_KINDS}
+    analyzed = 0
+    for (entities,) in rows:
+        if not isinstance(entities, dict):
+            continue
+        analyzed += 1
+        for kind in _ENTITY_KINDS:
+            values = entities.get(kind)
+            if not values:
+                continue
+            for v in values:
+                if kind == "money" and isinstance(v, dict):
+                    amount = v.get("amount")
+                    currency = v.get("currency") or ""
+                    label = f"{amount} {currency}".strip()
+                elif isinstance(v, str):
+                    label = v.strip()
+                else:
+                    label = str(v)
+                if not label:
+                    continue
+                counters[kind][label] = counters[kind].get(label, 0) + 1
+
+    groups = [
+        EntityGroup(
+            kind=kind,
+            items=[
+                EntityItem(value=val, count=cnt)
+                for val, cnt in sorted(
+                    counters[kind].items(), key=lambda x: x[1], reverse=True
+                )[:limit]
+            ],
+        )
+        for kind in _ENTITY_KINDS
+        if counters[kind]
+    ]
+
+    return EntitiesResponse(
+        period_days=days, analyzed_messages=analyzed, groups=groups
+    )

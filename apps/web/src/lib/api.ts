@@ -450,6 +450,66 @@ export type TenantInfo = {
   name: string;
 };
 
+// --- Settings ---
+
+export type CompanySettings = {
+  name: string;
+  timezone: string;
+  locale: string;
+};
+
+export type BillingInfo = {
+  plan: string;
+  trial_ends_at: string | null;
+  usage: {
+    conversations: number;
+    messages: number;
+    integrations: number;
+  };
+  limits: Record<string, number | null>;
+};
+
+// Раскладка KPI-дашборда (поток «настраиваемые KPI»). Произвольный JSON
+// настроек UI; сейчас используется ключ dashboard_overview.
+export type UiPreferences = {
+  dashboard_overview?: {
+    order?: string[];
+    hidden?: string[];
+  };
+  [key: string]: unknown;
+};
+
+// --- AI-таб: sentiment-таймлайн + entities ---
+
+export type SentimentDayPoint = {
+  day: string;
+  positive: number;
+  neutral: number;
+  negative: number;
+  avg_score: number | null;
+};
+
+export type SentimentOperatorRow = {
+  operator_id: string;
+  full_name: string | null;
+  avg_score: number | null;
+  analyzed_conversations: number;
+};
+
+export type SentimentTimelineResponse = {
+  period_days: number;
+  points: SentimentDayPoint[];
+  by_operator: SentimentOperatorRow[];
+};
+
+export type EntityItem = { value: string; count: number };
+export type EntityGroup = { kind: string; items: EntityItem[] };
+export type EntitiesResponse = {
+  period_days: number;
+  analyzed_messages: number;
+  groups: EntityGroup[];
+};
+
 export type AuthResponse = {
   access_token: string;
   token_type: string;
@@ -730,4 +790,52 @@ export const api = {
         only_active: params.only_active === false ? "false" : undefined,
       } as Record<string, string | number | undefined | null>)}`,
     ),
+
+  // --- Settings: компания ---
+  getCompanySettings: () =>
+    request<CompanySettings>("/api/v1/settings/company"),
+
+  updateCompanySettings: (body: Partial<CompanySettings>) =>
+    request<CompanySettings>("/api/v1/settings/company", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  // --- Settings: биллинг (витрина) ---
+  getBilling: () => request<BillingInfo>("/api/v1/settings/billing"),
+
+  // --- Settings: профиль и безопасность ---
+  updateProfile: (body: { full_name?: string }) =>
+    request<CurrentUser>("/api/v1/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
+
+  changePassword: (body: { old_password: string; new_password: string }) =>
+    request<void>("/api/v1/auth/change-password", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  logoutAll: () =>
+    request<void>("/api/v1/auth/logout-all", { method: "POST" }),
+
+  // --- Settings: UI-предпочтения (раскладка дашборда) ---
+  getPreferences: () =>
+    request<{ preferences: UiPreferences }>("/api/v1/settings/preferences"),
+
+  savePreferences: (preferences: UiPreferences) =>
+    request<{ preferences: UiPreferences }>("/api/v1/settings/preferences", {
+      method: "PUT",
+      body: JSON.stringify({ preferences }),
+    }),
+
+  // --- AI-таб ---
+  getSentimentTimeline: (f: DashboardFilters & { days?: number } = {}) =>
+    request<SentimentTimelineResponse>(
+      `/api/v1/dashboard/sentiment-timeline${qs(f)}`,
+    ),
+
+  getEntitiesTop: (f: DashboardFilters & { limit?: number } = {}) =>
+    request<EntitiesResponse>(`/api/v1/dashboard/entities${qs(f)}`),
 };

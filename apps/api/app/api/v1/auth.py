@@ -346,6 +346,17 @@ async def refresh(
     user = await session.get(User, payload.get("sub"))
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+
+    # «Выйти со всех устройств»: refresh-токены, выданные до sessions_revoked_at,
+    # отклоняем (JWT stateless — сверяем iat токена с меткой на пользователе).
+    if user.sessions_revoked_at is not None:
+        token_iat = payload.get("iat")
+        if token_iat is not None and token_iat < int(
+            user.sessions_revoked_at.timestamp()
+        ):
+            _clear_refresh_cookie(response)
+            raise HTTPException(status_code=401, detail="Session revoked")
+
     tenant = await session.get(Tenant, user.tenant_id)
 
     new_access = create_access_token(user.id, user.tenant_id)
@@ -377,3 +388,71 @@ async def me(
         user=UserOut.model_validate(user),
         tenant=TenantOut.model_validate(tenant),
     )
+
+
+class ProfilePatch(BaseModel):
+    full_name: str | None = Field(default=None, max_length=200)
+
+
+@router.patch("/me", response_model=UserOut)
+async def update_me(
+    body: ProfilePatch,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> User:
+    """Обновляет профиль текущего пользователя (пока только имя)."""
+    if body.full_name is not None:
+        user.full_name = body.full_name
+    await session.commit()
+    await session.refresh(user)
+    return user
+
+
+class ChangePasswordIn(BaseModel):
+    old_password: str = Field(min_length=1, max_length=200)
+    new_password: str = Field(min_length=8, max_length=200)
+
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("5/minute")
+async def change_password(
+    request: Request,
+    response: Response,
+    body: ChangePasswordIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """Смена пароля авторизованным пользователем (нужен текущий пароль)."""
+    if not verify_password(body.old_password, user.password_hash):
+        raise HTTPException(status_code=400, detail="Wrong current password")
+    user.password_hash = hash_password(body.new_password)
+    await write_audit(
+        session, action="auth.password_changed",
+        tenant_id=user.tenant_id, user_id=user.id, request=request,
+    )
+    await session.commit()
+    # Сбрасываем refresh-cookie текущего браузера; на access-токене (15 мин)
+    # пользователь дойдёт до /refresh и получит новую пару.
+    _clear_refresh_cookie(response)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response
+
+
+@router.post("/logout-all", status_code=status.HTTP_204_NO_CONTENT)
+async def logout_all(
+    request: Request,
+    response: Response,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Response:
+    """«Выйти со всех устройств»: проставляет sessions_revoked_at — все ранее
+    выданные refresh-токены перестают обновляться (см. /refresh)."""
+    user.sessions_revoked_at = datetime.now(UTC)
+    await write_audit(
+        session, action="auth.logout_all",
+        tenant_id=user.tenant_id, user_id=user.id, request=request,
+    )
+    await session.commit()
+    _clear_refresh_cookie(response)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response

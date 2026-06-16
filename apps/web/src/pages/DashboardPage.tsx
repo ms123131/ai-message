@@ -10,21 +10,21 @@ import {
 } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Button } from "../components/ui/Button";
+import { Tabs, type TabItem } from "../components/ui/Tabs";
 import { DashboardFilterBar } from "../components/dashboard/DashboardFilters";
 import { api, type DashboardFilters } from "../lib/api";
 import { OverviewTab } from "./dashboard/OverviewTab";
 import { ManagersTab } from "./dashboard/ManagersTab";
 import { ContactsTab } from "./dashboard/ContactsTab";
 import { AITab } from "./dashboard/AITab";
-import { cn } from "../lib/cn";
 
 type TabId = "overview" | "managers" | "contacts" | "ai";
 
-const TABS: Array<{ id: TabId; label: string; icon: typeof LineChartIcon; soon?: boolean }> = [
+const TABS: ReadonlyArray<TabItem<TabId>> = [
   { id: "overview", label: "Обзор", icon: LineChartIcon },
   { id: "managers", label: "Менеджеры", icon: Users },
   { id: "contacts", label: "Контакты", icon: UserSquare2 },
-  { id: "ai", label: "AI-аналитика", icon: Sparkles, soon: true },
+  { id: "ai", label: "AI-аналитика", icon: Sparkles },
 ];
 
 const TAB_IDS: readonly TabId[] = ["overview", "managers", "contacts", "ai"];
@@ -92,30 +92,7 @@ export function DashboardPage() {
     <>
       <PageHeader title="Дашборд" />
       <div className="space-y-4 p-6">
-        {/* Таб-бар */}
-        <div className="flex items-center gap-1 border-b border-slate-200">
-          {TABS.map(({ id, label, icon: Icon, soon }) => (
-            <button
-              key={id}
-              type="button"
-              onClick={() => setTab(id)}
-              className={cn(
-                "relative -mb-px flex items-center gap-1.5 border-b-2 px-3 py-2 text-sm font-medium transition",
-                tab === id
-                  ? "border-brand-600 text-brand-700"
-                  : "border-transparent text-slate-500 hover:text-slate-800",
-              )}
-            >
-              <Icon className="h-4 w-4" />
-              {label}
-              {soon && (
-                <span className="ml-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-slate-500">
-                  скоро
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
+        <Tabs tabs={TABS} value={tab} onChange={setTab} />
 
         <DashboardFilterBar value={filters} onChange={setFilters} />
 

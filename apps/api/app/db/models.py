@@ -28,6 +28,21 @@ class Tenant(Base):
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    # Региональные настройки организации (вкладка Settings → Компания).
+    timezone: Mapped[str] = mapped_column(
+        String(64), default="Europe/Moscow", server_default="Europe/Moscow", nullable=False
+    )
+    locale: Mapped[str] = mapped_column(
+        String(8), default="ru", server_default="ru", nullable=False
+    )
+    # Тариф/биллинг (вкладка Settings → Оплата). Реального приёма платежей пока
+    # нет — это витрина: plan + срок триала. enforcement лимитов — follow-up (F1).
+    plan: Mapped[str] = mapped_column(
+        String(32), default="trial", server_default="trial", nullable=False
+    )
+    trial_ends_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -66,6 +81,14 @@ class User(Base):
     # NULL = email ещё не подтверждён. Логин блокируется, пока не проставлено
     # (см. Hard-confirm в api/v1/auth.py).
     email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    # Пользовательские настройки UI (раскладка KPI-дашборда и т.п.). Формат:
+    # {"dashboard_overview": {"order": [...], "hidden": [...]}}. NULL = дефолт.
+    ui_preferences: Mapped[dict[str, Any] | None] = mapped_column(SAJSON)
+    # Метка «выйти со всех устройств»: refresh-токены, выданные раньше этого
+    # момента, отклоняются в /auth/refresh (JWT stateless, проверка по iat).
+    sessions_revoked_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
