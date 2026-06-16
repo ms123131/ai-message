@@ -1,30 +1,42 @@
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
+import { toast } from "sonner";
 import {
+  Area,
+  AreaChart,
+  CartesianGrid,
   Cell,
+  Legend,
   Pie,
   PieChart,
   ResponsiveContainer,
   Tooltip,
+  XAxis,
+  YAxis,
 } from "recharts";
 import {
   AlertCircle,
+  Boxes,
   CheckCircle2,
   Hash,
-  Lightbulb,
   Loader2,
-  Lock,
+  Network,
+  Play,
   Smile,
   Sparkles,
-  TrendingDown,
-  TrendingUp,
-  Wand2,
 } from "lucide-react";
+import { Button } from "../../components/ui/Button";
 import { SentimentBadge } from "../../components/SentimentBadge";
+import { fmtDateShort } from "../../components/dashboard/format";
 import {
   api,
   type DashboardFilters,
+  type EntityGroup,
+  type Integration,
   type SentimentBucket,
+  type SentimentDayPoint,
+  type SentimentOperatorRow,
   type TagBucket,
   type TopNegativeConversation,
 } from "../../lib/api";
@@ -55,14 +67,11 @@ export function AITab({ filters }: { filters: DashboardFilters }) {
   return (
     <div className="space-y-6">
       <Hero />
+      <ControlPanel filters={filters} />
       <SentimentBlock filters={filters} />
+      <SentimentTimelineBlock filters={filters} />
       <TagsBlock filters={filters} />
-
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {LOCKED_FEATURES.map((f) => (
-          <FeatureCard key={f.title} {...f} />
-        ))}
-      </div>
+      <EntitiesBlock filters={filters} />
     </div>
   );
 }
@@ -75,14 +84,12 @@ function Hero() {
           <Sparkles className="h-6 w-6 text-brand-600" />
         </div>
         <div className="min-w-0 flex-1">
-          <h2 className="text-lg font-semibold text-slate-900">
-            AI-аналитика
-          </h2>
+          <h2 className="text-lg font-semibold text-slate-900">AI-аналитика</h2>
           <p className="mt-1 max-w-2xl text-sm text-slate-600">
-            Готово: тональность клиента, авто-теги тем, сводка диалога одной
-            кнопкой, распознавание контактов и сущностей в сообщениях.
-            Дальше — обнаружение аномалий, оценка качества ответов и
-            еженедельные инсайты.
+            Тональность клиентов, авто-теги тем, распознавание сущностей в
+            сообщениях и семантический поиск похожих диалогов. NLP работает
+            автоматически; ниже — статус функций, динамика тональности и топ
+            упомянутых сущностей.
           </p>
         </div>
       </div>
@@ -91,7 +98,255 @@ function Hero() {
 }
 
 // ---------------------------------------------------------------------------
-// Sentiment-блок
+// AI Control Panel — статус NLP-функций + ручные триггеры
+// ---------------------------------------------------------------------------
+
+type NlpFeature = "sentiment" | "tags" | "entities" | "embeddings";
+
+const FEATURE_META: Record<
+  NlpFeature,
+  { label: string; hint: string; icon: typeof Smile; accent: string }
+> = {
+  sentiment: {
+    label: "Тональность",
+    hint: "Эмоциональная окраска клиентских сообщений",
+    icon: Smile,
+    accent: "bg-emerald-50 text-emerald-600",
+  },
+  tags: {
+    label: "Темы (теги)",
+    hint: "Классификация обращений по словарю портала",
+    icon: Hash,
+    accent: "bg-violet-50 text-violet-600",
+  },
+  entities: {
+    label: "Сущности",
+    hint: "Суммы, компании, города, контакты в тексте",
+    icon: Boxes,
+    accent: "bg-sky-50 text-sky-600",
+  },
+  embeddings: {
+    label: "Эмбеддинги",
+    hint: "Векторы для поиска похожих диалогов",
+    icon: Network,
+    accent: "bg-amber-50 text-amber-600",
+  },
+};
+
+const TRIGGERS: Record<NlpFeature, (integrationId: string) => Promise<unknown>> =
+  {
+    sentiment: (id) => api.triggerSentimentAnalysis(id),
+    tags: (id) => api.triggerTagsAnalysis(id),
+    entities: (id) => api.triggerEntitiesAnalysis(id),
+    embeddings: (id) => api.triggerEmbeddingsAnalysis(id),
+  };
+
+// Какой query-ключ инвалидируем после запуска, чтобы освежить счётчики.
+const FEATURE_QUERY_KEY: Record<NlpFeature, string | null> = {
+  sentiment: "dash-sentiment",
+  tags: "dash-tags",
+  entities: "dash-entities",
+  embeddings: null,
+};
+
+function ControlPanel({ filters }: { filters: DashboardFilters }) {
+  const qc = useQueryClient();
+  const integrationsQ = useQuery({
+    queryKey: ["integrations"],
+    queryFn: api.listIntegrations,
+  });
+  const llmStatusQ = useQuery({
+    queryKey: ["llm-status"],
+    queryFn: api.getLLMStatus,
+    staleTime: 60_000,
+  });
+  // Те же ключи, что в SentimentBlock/TagsBlock/EntitiesBlock — react-query
+  // делит кэш, лишних запросов нет.
+  const sentimentQ = useQuery({
+    queryKey: ["dash-sentiment", filters],
+    queryFn: () => api.getDashboardSentiment(filters),
+    refetchInterval: 30_000,
+  });
+  const tagsQ = useQuery({
+    queryKey: ["dash-tags", filters],
+    queryFn: () => api.getDashboardTags({ ...filters, limit: 20 }),
+    refetchInterval: 60_000,
+  });
+  const entitiesQ = useQuery({
+    queryKey: ["dash-entities", filters],
+    queryFn: () => api.getEntitiesTop({ ...filters, limit: 10 }),
+    refetchInterval: 60_000,
+  });
+
+  const integrations = integrationsQ.data ?? [];
+  const [selectedId, setSelectedId] = useState<string>("");
+  const integrationId =
+    selectedId || (integrations.length > 0 ? integrations[0].id : "");
+
+  const fastReady = llmStatusQ.data?.fast_available ?? false;
+
+  const mutation = useMutation({
+    mutationFn: ({
+      feature,
+      id,
+    }: {
+      feature: NlpFeature;
+      id: string;
+    }) => TRIGGERS[feature](id),
+    onSuccess: (_data, { feature }) => {
+      toast.success(`${FEATURE_META[feature].label}: анализ запущен`);
+      const key = FEATURE_QUERY_KEY[feature];
+      // Воркер обрабатывает батч асинхронно — освежим счётчики чуть позже.
+      if (key) {
+        setTimeout(() => qc.invalidateQueries({ queryKey: [key] }), 2500);
+      }
+    },
+    onError: (err) => {
+      toast.error((err as Error).message || "Не удалось запустить анализ");
+    },
+  });
+
+  const counts: Record<
+    NlpFeature,
+    { analyzed: number | null; pending: number | null }
+  > = {
+    sentiment: {
+      analyzed: sentimentQ.data?.analyzed_messages ?? null,
+      pending: sentimentQ.data?.pending_messages ?? null,
+    },
+    tags: {
+      analyzed: tagsQ.data?.analyzed_messages ?? null,
+      pending: tagsQ.data?.pending_messages ?? null,
+    },
+    entities: {
+      analyzed: entitiesQ.data?.analyzed_messages ?? null,
+      pending: null,
+    },
+    embeddings: { analyzed: null, pending: null },
+  };
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-5">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="font-medium text-slate-800">AI Control Panel</div>
+          <div className="text-xs text-slate-500">
+            Статус NLP-функций и ручной перезапуск анализа
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          {integrations.length > 1 && (
+            <select
+              value={integrationId}
+              onChange={(e) => setSelectedId(e.target.value)}
+              className="rounded-md border border-slate-200 px-2.5 py-1.5 text-sm text-slate-700 outline-none focus:border-brand-500"
+            >
+              {integrations.map((i: Integration) => (
+                <option key={i.id} value={i.id}>
+                  {i.label || i.domain}
+                </option>
+              ))}
+            </select>
+          )}
+        </div>
+      </div>
+
+      {!llmStatusQ.isLoading && !fastReady && (
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div>
+            <div className="font-medium">LLM не настроен</div>
+            <div className="mt-0.5 text-amber-700">
+              Задайте <code className="font-mono">LLM_FAST_PROVIDER</code> /{" "}
+              <code className="font-mono">LLM_FAST_API_KEY</code> в окружении
+              backend — без этого тональность и теги не считаются.
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        {(Object.keys(FEATURE_META) as NlpFeature[]).map((feature) => {
+          const meta = FEATURE_META[feature];
+          const { analyzed, pending } = counts[feature];
+          const Icon = meta.icon;
+          const isRunning =
+            mutation.isPending && mutation.variables?.feature === feature;
+          // sentiment/tags зависят от fast LLM; entities/embeddings — нет.
+          const needsFast = feature === "sentiment" || feature === "tags";
+          const disabled =
+            isRunning || !integrationId || (needsFast && !fastReady);
+          return (
+            <div
+              key={feature}
+              className="flex flex-col rounded-lg border border-slate-100 bg-slate-50 p-3"
+            >
+              <div className="flex items-start gap-2.5">
+                <div
+                  className={`grid h-9 w-9 shrink-0 place-items-center rounded-lg ${meta.accent}`}
+                >
+                  <Icon className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-slate-800">
+                    {meta.label}
+                  </div>
+                  <div className="text-[11px] leading-tight text-slate-500">
+                    {meta.hint}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-3 space-y-1 text-xs">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Проанализировано</span>
+                  <span className="tabular-nums font-medium text-slate-700">
+                    {analyzed === null ? "—" : fmtCount(analyzed)}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">В очереди</span>
+                  <span
+                    className={`tabular-nums font-medium ${
+                      pending && pending > 0 ? "text-sky-700" : "text-slate-400"
+                    }`}
+                  >
+                    {pending === null ? "—" : fmtCount(pending)}
+                  </span>
+                </div>
+              </div>
+              <Button
+                variant="secondary"
+                className="mt-3 w-full"
+                disabled={disabled}
+                title={
+                  !integrationId
+                    ? "Нет подключённых интеграций"
+                    : needsFast && !fastReady
+                      ? "Нужен fast LLM-провайдер"
+                      : undefined
+                }
+                onClick={() => mutation.mutate({ feature, id: integrationId })}
+              >
+                {isRunning ? (
+                  <>
+                    <Loader2 className="h-4 w-4 animate-spin" /> Запуск…
+                  </>
+                ) : (
+                  <>
+                    <Play className="h-4 w-4" /> Запустить
+                  </>
+                )}
+              </Button>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sentiment-блок (донат + топ негативных) — без изменений
 // ---------------------------------------------------------------------------
 
 function SentimentBlock({ filters }: { filters: DashboardFilters }) {
@@ -135,21 +390,6 @@ function SentimentBlock({ filters }: { filters: DashboardFilters }) {
           pending={sentimentQ.data?.pending_messages ?? 0}
         />
       </div>
-
-      {!llmStatusQ.isLoading && !llmReady && (
-        <div className="mb-4 flex items-start gap-2 rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
-          <AlertCircle className="mt-0.5 h-4 w-4 shrink-0" />
-          <div>
-            <div className="font-medium">AI-функции отключены</div>
-            <div className="mt-0.5 text-amber-700">
-              Задайте <code className="font-mono">LLM_FAST_PROVIDER</code> и
-              <code className="font-mono"> LLM_FAST_API_KEY</code> в окружении
-              backend (см. <code className="font-mono">apps/api/.env.example</code>).
-              Без этого тональность не считается.
-            </div>
-          </div>
-        </div>
-      )}
 
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         <div className="lg:col-span-1">
@@ -207,10 +447,7 @@ function DonutChart({
           stroke="none"
         >
           {data.map((b) => (
-            <Cell
-              key={b.sentiment}
-              fill={SENTIMENT_COLORS[b.sentiment]}
-            />
+            <Cell key={b.sentiment} fill={SENTIMENT_COLORS[b.sentiment]} />
           ))}
         </Pie>
         <Tooltip
@@ -230,7 +467,14 @@ function KpiStrip({
   data,
   loading,
 }: {
-  data: { total_messages: number; analyzed_messages: number; pending_messages: number; avg_score: number | null } | undefined;
+  data:
+    | {
+        total_messages: number;
+        analyzed_messages: number;
+        pending_messages: number;
+        avg_score: number | null;
+      }
+    | undefined;
   loading?: boolean;
 }) {
   return (
@@ -324,7 +568,7 @@ function TopNegativeList({
           {items.map((it) => (
             <li key={it.conversation_id} className="py-2">
               <Link
-                to={buildInboxLink(filters, { conv: it.conversation_id })}
+                to={`/inbox/${it.conversation_id}`}
                 className="flex items-center gap-3 hover:bg-white/70 -mx-2 px-2 py-1 rounded"
               >
                 <SentimentBadge
@@ -363,10 +607,9 @@ function TopNegativeList({
 }
 
 /**
- * Бэйдж «авто-режим включён». Заменил собой кнопки «Запустить анализ» /
- * «Запустить тегирование»: NLP теперь крутится автоматически — cron каждые
+ * Бэйдж «авто-режим включён». NLP крутится автоматически — cron каждые
  * 5 минут плюс realtime-триггер на каждое новое клиентское сообщение
- * (см. webhooks.py). Кнопка превратилась в пассивный индикатор статуса.
+ * (см. webhooks.py). Ручной перезапуск — в AI Control Panel выше.
  */
 function AutoStatusBadge({
   llmReady,
@@ -398,9 +641,220 @@ function AutoStatusBadge({
   );
 }
 
+// ---------------------------------------------------------------------------
+// Sentiment-таймлайн: динамика по дням / срез по операторам
+// ---------------------------------------------------------------------------
+
+function SentimentTimelineBlock({ filters }: { filters: DashboardFilters }) {
+  const [mode, setMode] = useState<"day" | "operator">("day");
+  const timelineQ = useQuery({
+    queryKey: ["dash-sentiment-timeline", filters],
+    queryFn: () => api.getSentimentTimeline(filters),
+    refetchInterval: 60_000,
+  });
+
+  const points = timelineQ.data?.points ?? [];
+  const operators = timelineQ.data?.by_operator ?? [];
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-white p-5">
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-rose-50 text-rose-600">
+            <Smile className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="font-medium text-slate-800">
+              Динамика тональности
+            </div>
+            <div className="text-xs text-slate-500">
+              {mode === "day"
+                ? "Распределение тональности клиентских сообщений по дням"
+                : "Средний sentiment диалогов в разрезе операторов"}
+            </div>
+          </div>
+        </div>
+        <div className="inline-flex rounded-md border border-slate-200 p-0.5 text-xs">
+          <button
+            type="button"
+            onClick={() => setMode("day")}
+            className={`rounded px-2.5 py-1 font-medium transition ${
+              mode === "day"
+                ? "bg-brand-600 text-white"
+                : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            По дням
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("operator")}
+            className={`rounded px-2.5 py-1 font-medium transition ${
+              mode === "operator"
+                ? "bg-brand-600 text-white"
+                : "text-slate-600 hover:bg-slate-50"
+            }`}
+          >
+            По операторам
+          </button>
+        </div>
+      </div>
+
+      {timelineQ.isLoading ? (
+        <div className="flex h-[260px] items-center justify-center">
+          <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
+        </div>
+      ) : mode === "day" ? (
+        <SentimentDayChart points={points} />
+      ) : (
+        <OperatorList operators={operators} />
+      )}
+    </div>
+  );
+}
+
+function SentimentDayChart({ points }: { points: SentimentDayPoint[] }) {
+  const hasData = points.some(
+    (p) => p.positive + p.neutral + p.negative > 0,
+  );
+  if (!hasData) {
+    return (
+      <div className="flex h-[260px] flex-col items-center justify-center gap-1 text-center text-xs text-slate-400">
+        <Smile className="h-6 w-6 text-slate-300" />
+        За выбранный период нет размеченных сообщений
+      </div>
+    );
+  }
+  return (
+    <ResponsiveContainer width="100%" height={260}>
+      <AreaChart
+        data={points}
+        margin={{ top: 8, right: 8, left: -16, bottom: 0 }}
+      >
+        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+        <XAxis
+          dataKey="day"
+          tickFormatter={(v) => fmtDateShort(String(v))}
+          tick={{ fontSize: 11, fill: "#94a3b8" }}
+          tickLine={false}
+          axisLine={false}
+        />
+        <YAxis
+          tick={{ fontSize: 11, fill: "#94a3b8" }}
+          tickLine={false}
+          axisLine={false}
+          allowDecimals={false}
+        />
+        <Tooltip
+          contentStyle={{
+            fontSize: 12,
+            borderRadius: 8,
+            border: "1px solid #e2e8f0",
+          }}
+          labelFormatter={(l) => fmtDateShort(String(l))}
+        />
+        <Legend
+          iconType="circle"
+          wrapperStyle={{ fontSize: 12 }}
+          formatter={(value) =>
+            SENTIMENT_LABEL[value as SentimentBucket["sentiment"]] ?? value
+          }
+        />
+        <Area
+          type="monotone"
+          dataKey="positive"
+          stackId="1"
+          stroke={SENTIMENT_COLORS.positive}
+          fill={SENTIMENT_COLORS.positive}
+          fillOpacity={0.7}
+        />
+        <Area
+          type="monotone"
+          dataKey="neutral"
+          stackId="1"
+          stroke={SENTIMENT_COLORS.neutral}
+          fill={SENTIMENT_COLORS.neutral}
+          fillOpacity={0.6}
+        />
+        <Area
+          type="monotone"
+          dataKey="negative"
+          stackId="1"
+          stroke={SENTIMENT_COLORS.negative}
+          fill={SENTIMENT_COLORS.negative}
+          fillOpacity={0.7}
+        />
+      </AreaChart>
+    </ResponsiveContainer>
+  );
+}
+
+function OperatorList({ operators }: { operators: SentimentOperatorRow[] }) {
+  if (operators.length === 0) {
+    return (
+      <div className="flex h-[260px] flex-col items-center justify-center gap-1 text-center text-xs text-slate-400">
+        <Smile className="h-6 w-6 text-slate-300" />
+        Нет данных по операторам за период
+      </div>
+    );
+  }
+  // avg_score в диапазоне [-1, 1]; ширину бара считаем от центра.
+  return (
+    <ul className="space-y-2">
+      {operators.map((op) => {
+        const score = op.avg_score ?? 0;
+        const pct = Math.min(100, Math.abs(score) * 100);
+        const positive = score >= 0;
+        return (
+          <li
+            key={op.operator_id}
+            className="flex items-center gap-3 text-xs"
+          >
+            <span className="w-40 shrink-0 truncate text-slate-700">
+              {op.full_name || `#${op.operator_id}`}
+            </span>
+            <div className="flex flex-1 items-center">
+              <div className="flex h-2 flex-1 justify-end">
+                {!positive && (
+                  <div
+                    className="h-full rounded-l bg-rose-400"
+                    style={{ width: `${pct}%` }}
+                  />
+                )}
+              </div>
+              <div className="h-3 w-px bg-slate-300" />
+              <div className="flex h-2 flex-1 justify-start">
+                {positive && (
+                  <div
+                    className="h-full rounded-r bg-emerald-400"
+                    style={{ width: `${pct}%` }}
+                  />
+                )}
+              </div>
+            </div>
+            <span
+              className={`w-12 text-right font-mono tabular-nums ${
+                score < -0.2
+                  ? "text-rose-700"
+                  : score > 0.2
+                    ? "text-emerald-700"
+                    : "text-slate-500"
+              }`}
+            >
+              {fmtScore(op.avg_score)}
+            </span>
+            <span className="w-16 text-right tabular-nums text-slate-400">
+              {op.analyzed_conversations} диал.
+            </span>
+          </li>
+        );
+      })}
+    </ul>
+  );
+}
 
 // ---------------------------------------------------------------------------
-// Tags-блок: о чём пишут клиенты (донат + список)
+// Tags-блок: о чём пишут клиенты (донат + список) — без изменений
 // ---------------------------------------------------------------------------
 
 const TAG_LABEL_OVERRIDE: Record<string, string> = {
@@ -481,11 +935,15 @@ function TagsBlock({ filters }: { filters: DashboardFilters }) {
             />
             <Row
               label="Протегировано"
-              value={tagsQ.isLoading ? "…" : fmtCount(data?.analyzed_messages ?? 0)}
+              value={
+                tagsQ.isLoading ? "…" : fmtCount(data?.analyzed_messages ?? 0)
+              }
             />
             <Row
               label="Ждут тегирования"
-              value={tagsQ.isLoading ? "…" : fmtCount(data?.pending_messages ?? 0)}
+              value={
+                tagsQ.isLoading ? "…" : fmtCount(data?.pending_messages ?? 0)
+              }
               muted={(data?.pending_messages ?? 0) === 0}
             />
           </div>
@@ -607,153 +1065,95 @@ function TagsList({
 }
 
 // ---------------------------------------------------------------------------
-// Прочие lock-карточки — без изменений по содержанию
+// Топ упомянутых сущностей (суммы / компании / города / контакты)
 // ---------------------------------------------------------------------------
 
-type Feature = {
-  icon: typeof Sparkles;
-  title: string;
-  description: string;
-  preview: React.ReactNode;
-  accent: string;
+const ENTITY_KIND_LABEL: Record<string, string> = {
+  money: "Суммы",
+  organization: "Компании",
+  location: "Города и адреса",
+  person: "Имена",
+  email: "Email",
+  phone: "Телефоны",
 };
 
-const LOCKED_FEATURES: Feature[] = [
-  {
-    icon: AlertCircle,
-    accent: "bg-rose-50 text-rose-600",
-    title: "Обнаружение аномалий",
-    description:
-      "Мониторинг резких всплесков по темам и тональности. Уведомление, когда что-то идёт не так — до того, как заметит руководитель.",
-    preview: (
-      <AnomalyPreview text="Жалоб на «не приходит код» сегодня в 4× выше нормы" />
-    ),
-  },
-  {
-    icon: Wand2,
-    accent: "bg-amber-50 text-amber-600",
-    title: "Оценка качества ответов",
-    description:
-      "LLM проверяет диалог по чек-листу: эмпатия, полнота ответа, корректность, грамматика. Не только скорость, но и качество.",
-    preview: <QualityScorePreview score={87} />,
-  },
-  {
-    icon: TrendingDown,
-    accent: "bg-pink-50 text-pink-600",
-    title: "Прогноз оттока клиентов",
-    description:
-      "Модель оценивает риск ухода клиента на основе истории обращений и тональности. Список «обратите внимание» — в дашборде.",
-    preview: <ChurnPreview at_risk={3} watch={12} healthy={84} />,
-  },
-  {
-    icon: Lightbulb,
-    accent: "bg-orange-50 text-orange-600",
-    title: "Еженедельные инсайты",
-    description:
-      "Раз в неделю система сама собирает наблюдения: что выросло, что упало, на что обратить внимание руководителю.",
-    preview: (
-      <ul className="space-y-1 text-xs text-slate-600">
-        <li className="flex items-start gap-1">
-          <TrendingUp className="mt-0.5 h-3 w-3 text-emerald-600" />
-          <span>Скорость ответа улучшилась на 18%</span>
-        </li>
-        <li className="flex items-start gap-1">
-          <TrendingDown className="mt-0.5 h-3 w-3 text-rose-600" />
-          <span>Негатив по теме «возврат» вырос на 32%</span>
-        </li>
-        <li className="flex items-start gap-1">
-          <AlertCircle className="mt-0.5 h-3 w-3 text-amber-600" />
-          <span>Иванов перегружен: +40% нагрузки vs среднего</span>
-        </li>
-      </ul>
-    ),
-  },
-];
+function EntitiesBlock({ filters }: { filters: DashboardFilters }) {
+  const entitiesQ = useQuery({
+    queryKey: ["dash-entities", filters],
+    queryFn: () => api.getEntitiesTop({ ...filters, limit: 10 }),
+    refetchInterval: 60_000,
+  });
 
-function FeatureCard({ icon: Icon, title, description, preview, accent }: Feature) {
+  const groups = entitiesQ.data?.groups ?? [];
+
   return (
-    <div className="relative overflow-hidden rounded-lg border border-slate-200 bg-white p-5">
-      <span className="absolute right-3 top-3 inline-flex items-center gap-1 rounded-full bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-500">
-        <Lock className="h-3 w-3" /> скоро
-      </span>
-      <div className="flex items-start gap-3">
-        <div className={`grid h-10 w-10 shrink-0 place-items-center rounded-lg ${accent}`}>
-          <Icon className="h-5 w-5" />
+    <div className="rounded-xl border border-slate-200 bg-white p-5">
+      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+        <div className="flex items-start gap-3">
+          <div className="grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-sky-50 text-sky-600">
+            <Boxes className="h-5 w-5" />
+          </div>
+          <div>
+            <div className="font-medium text-slate-800">
+              Топ упомянутых сущностей
+            </div>
+            <div className="text-xs text-slate-500">
+              Суммы, компании, города и контакты из текста сообщений
+            </div>
+          </div>
         </div>
-        <div className="min-w-0">
-          <div className="font-medium text-slate-800">{title}</div>
-          <p className="mt-1 text-xs leading-relaxed text-slate-500">
-            {description}
-          </p>
+        {entitiesQ.data && (
+          <div className="text-xs text-slate-400">
+            размечено {fmtCount(entitiesQ.data.analyzed_messages)} сообщений
+          </div>
+        )}
+      </div>
+
+      {entitiesQ.isLoading ? (
+        <div className="flex h-[160px] items-center justify-center">
+          <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
         </div>
-      </div>
-      <div className="mt-4 rounded-md border border-slate-100 bg-slate-50 p-3">
-        {preview}
-      </div>
+      ) : groups.length === 0 ? (
+        <div className="flex h-[160px] flex-col items-center justify-center gap-1 text-center text-xs text-slate-400">
+          <Boxes className="h-6 w-6 text-slate-300" />
+          Сущности ещё не извлечены. Запустите анализ в AI Control Panel выше.
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {groups.map((g) => (
+            <EntityGroupCard key={g.kind} group={g} />
+          ))}
+        </div>
+      )}
     </div>
   );
 }
 
-function AnomalyPreview({ text }: { text: string }) {
+function EntityGroupCard({ group }: { group: EntityGroup }) {
+  const max = Math.max(...group.items.map((i) => i.count), 1);
   return (
-    <div className="flex items-start gap-2 text-xs">
-      <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-500" />
-      <div>
-        <div className="font-medium text-slate-700">Обнаружена аномалия</div>
-        <div className="text-slate-500">{text}</div>
+    <div className="rounded-lg border border-slate-100 bg-slate-50 p-4">
+      <div className="mb-2 text-xs font-medium uppercase tracking-wider text-slate-500">
+        {ENTITY_KIND_LABEL[group.kind] ?? group.kind}
       </div>
-    </div>
-  );
-}
-
-function QualityScorePreview({ score }: { score: number }) {
-  return (
-    <div className="flex items-center gap-3">
-      <div className="relative grid h-14 w-14 place-items-center rounded-full border-4 border-emerald-200">
-        <span className="text-sm font-semibold text-emerald-700">{score}</span>
-      </div>
-      <ul className="space-y-0.5 text-xs text-slate-600">
-        <li>✓ Эмпатия</li>
-        <li>✓ Полнота ответа</li>
-        <li>· Время ответа</li>
+      <ul className="space-y-1.5">
+        {group.items.map((it) => (
+          <li key={it.value} className="flex items-center gap-2 text-xs">
+            <span className="min-w-0 flex-1 truncate text-slate-700" title={it.value}>
+              {it.value}
+            </span>
+            <div className="h-1.5 w-16 overflow-hidden rounded bg-slate-200">
+              <div
+                className="h-full bg-sky-400"
+                style={{ width: `${(it.count / max) * 100}%` }}
+              />
+            </div>
+            <span className="w-8 text-right tabular-nums text-slate-500">
+              {it.count}
+            </span>
+          </li>
+        ))}
       </ul>
-    </div>
-  );
-}
-
-function ChurnPreview({
-  at_risk,
-  watch,
-  healthy,
-}: {
-  at_risk: number;
-  watch: number;
-  healthy: number;
-}) {
-  return (
-    <div className="flex items-stretch gap-2 text-xs">
-      <Stat color="bg-rose-50 text-rose-700" label="в зоне риска" value={at_risk} />
-      <Stat color="bg-amber-50 text-amber-700" label="наблюдать" value={watch} />
-      <Stat color="bg-emerald-50 text-emerald-700" label="лояльные" value={healthy} />
-    </div>
-  );
-}
-
-function Stat({
-  color,
-  label,
-  value,
-}: {
-  color: string;
-  label: string;
-  value: number;
-}) {
-  return (
-    <div className={`flex-1 rounded-md px-2 py-1.5 ${color}`}>
-      <div className="text-base font-semibold tabular-nums">{value}</div>
-      <div className="text-[10px] uppercase tracking-wider opacity-70">
-        {label}
-      </div>
     </div>
   );
 }

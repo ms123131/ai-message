@@ -1,5 +1,6 @@
-import { Fragment } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { Fragment, useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 import {
   Area,
   AreaChart,
@@ -12,19 +13,17 @@ import {
   XAxis,
   YAxis,
 } from "recharts";
-import {
-  ArrowDownRight,
-  ArrowUpRight,
-  Clock,
-  Loader2,
-  Minus,
-  Radio,
-} from "lucide-react";
+import { Clock, Loader2, Radio, SlidersHorizontal } from "lucide-react";
 import { Link } from "react-router-dom";
 import { api, type ConversationChannel, type DashboardFilters } from "../../lib/api";
-import { KPICard } from "../../components/dashboard/KPICard";
+import { Button } from "../../components/ui/Button";
 import { FunnelChart } from "../../components/dashboard/FunnelChart";
 import { buildInboxLink } from "../../components/dashboard/inboxLink";
+import {
+  KPI_BY_ID,
+  resolveKpiOrder,
+} from "../../components/dashboard/kpiRegistry";
+import { KpiCustomizer } from "../../components/dashboard/KpiCustomizer";
 import {
   fmtDateShort,
   fmtDuration,
@@ -93,118 +92,86 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
     queryFn: () => api.getDashboardFunnel(filters),
     refetchInterval: 60_000,
   });
+  const prefsQ = useQuery({
+    queryKey: ["preferences"],
+    queryFn: api.getPreferences,
+    staleTime: 60_000,
+  });
 
   const o = overviewQ.data;
 
+  // Раскладка KPI: порядок + скрытые из пользовательских preferences.
+  const qc = useQueryClient();
+  const [customizing, setCustomizing] = useState(false);
+  const layout = prefsQ.data?.preferences?.dashboard_overview;
+  const order = resolveKpiOrder(layout?.order);
+  const hidden = layout?.hidden ?? [];
+  const visibleIds = order.filter((id) => !hidden.includes(id));
+
+  const saveLayout = useMutation({
+    mutationFn: (next: { order: string[]; hidden: string[] }) =>
+      api.savePreferences({ dashboard_overview: next }),
+    onSuccess: (res) => {
+      qc.setQueryData(["preferences"], res);
+      toast.success("Раскладка показателей сохранена");
+      setCustomizing(false);
+    },
+    onError: () => toast.error("Не удалось сохранить раскладку"),
+  });
+
   return (
     <div className="space-y-6">
-      {/* Ряд 1 — объём */}
-      <Section title="Объём и активность">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <KPICard
-            label="Сообщений"
-            kpi={o?.messages}
-            loading={overviewQ.isLoading}
-          />
-          <KPICard
-            label="Диалогов"
-            kpi={o?.conversations}
-            loading={overviewQ.isLoading}
-          />
-          <KPICard
-            label="Открыто сейчас"
-            value={o?.open_now}
-            loading={overviewQ.isLoading}
-            hint="мгновенный снимок · перейти к списку"
-            linkTo={buildInboxLink(filters, { status: "open" })}
-          />
-          <KPICard
-            label="Закрыто за период"
-            kpi={o?.closed_in_period}
-            loading={overviewQ.isLoading}
-            hint="скорость разгребания"
-            linkTo={buildInboxLink(filters, { status: "closed" })}
-          />
-          <KPICard
-            label="Сообщений на диалог"
-            kpi={o?.avg_messages_per_conv}
-            loading={overviewQ.isLoading}
-            hint="среднее"
-          />
-        </div>
-      </Section>
-
-      {/* Ряд 2 — качество */}
-      <Section title="Качество обслуживания">
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-          <KPICard
-            label="Время первого ответа"
-            kpi={o?.frt_median_sec}
-            format="duration"
-            higherIsBetter={false}
-            loading={overviewQ.isLoading}
-            hint="медиана"
-          />
-          <KPICard
-            label="Самые медленные ответы"
-            kpi={o?.frt_p90_sec}
-            format="duration"
-            higherIsBetter={false}
-            loading={overviewQ.isLoading}
-            hint="90-й перцентиль (10% худших)"
-          />
-          <KPICard
-            label="Время решения вопроса"
-            kpi={o?.resolution_median_sec}
-            format="duration"
-            higherIsBetter={false}
-            loading={overviewQ.isLoading}
-            hint="медиана"
-          />
-          <KPICard
-            label="Возвратные клиенты"
-            kpi={o?.returning_contacts_pct}
-            format="percent"
-            loading={overviewQ.isLoading}
-            hint="% с более чем одним обращением"
-          />
-          <SentimentKPICard
-            avg={o?.sentiment_avg ?? null}
-            prev={o?.sentiment_avg_prev ?? null}
-            pending={o?.sentiment_pending_messages ?? 0}
-            loading={overviewQ.isLoading}
-          />
-        </div>
-      </Section>
-
-      {/* Ряд 3 — CRM-конверсия */}
-      <Section title="Конверсия в CRM">
-        <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
-          <div className="grid grid-cols-1 gap-3 xl:col-span-1">
-            <KPICard
-              label="Диалог → сделка"
-              kpi={o?.conversion_to_deal_pct}
-              format="percent"
-              loading={overviewQ.isLoading}
-              hint="% диалогов, породивших Deal"
-            />
-            <KPICard
-              label="Win-rate сделок"
-              kpi={o?.win_rate_pct}
-              format="percent"
-              loading={overviewQ.isLoading}
-              hint="выиграно / (выиграно + проиграно)"
-            />
-          </div>
-          <Card
-            title="Воронка диалоги → лиды → сделки"
-            subtitle="по диалогам в периоде; % — конверсия из предыдущей ступени"
-            className="xl:col-span-2"
+      {/* Ключевые показатели — настраиваемая сетка (порядок/скрытие) */}
+      <Section
+        title="Ключевые показатели"
+        action={
+          <Button
+            variant="ghost"
+            className="h-7 px-2 py-1 text-xs"
+            onClick={() => setCustomizing(true)}
           >
-            <FunnelChart data={funnelQ.data} loading={funnelQ.isLoading} />
-          </Card>
-        </div>
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+            Настроить
+          </Button>
+        }
+      >
+        {visibleIds.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-slate-200 bg-white p-6 text-center text-sm text-slate-400">
+            Все показатели скрыты. Нажмите «Настроить», чтобы вернуть нужные.
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {visibleIds.map((id) => (
+              <Fragment key={id}>
+                {KPI_BY_ID[id]?.render({
+                  o,
+                  loading: overviewQ.isLoading,
+                  filters,
+                })}
+              </Fragment>
+            ))}
+          </div>
+        )}
       </Section>
+
+      {/* CRM-воронка */}
+      <Section title="Конверсия в CRM">
+        <Card
+          title="Воронка диалоги → лиды → сделки"
+          subtitle="по диалогам в периоде; % — конверсия из предыдущей ступени"
+        >
+          <FunnelChart data={funnelQ.data} loading={funnelQ.isLoading} />
+        </Card>
+      </Section>
+
+      <KpiCustomizer
+        open={customizing}
+        onClose={() => setCustomizing(false)}
+        order={order}
+        hidden={hidden}
+        onSave={(next) => saveLayout.mutate(next)}
+        saving={saveLayout.isPending}
+      />
 
       {/* Графики: timeline + по каналам */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-3">
@@ -349,94 +316,23 @@ export function OverviewTab({ filters }: { filters: DashboardFilters }) {
   );
 }
 
-function formatSentimentScore(v: number | null): string {
-  if (v === null || v === undefined || Number.isNaN(v)) return "—";
-  const sign = v > 0 ? "+" : v < 0 ? "" : "";
-  return `${sign}${v.toFixed(2)}`;
-}
-
-function SentimentKPICard({
-  avg,
-  prev,
-  pending,
-  loading,
-}: {
-  avg: number | null;
-  prev: number | null;
-  pending: number;
-  loading?: boolean;
-}) {
-  const tone =
-    avg === null ? "unknown" : avg > 0.2 ? "pos" : avg < -0.2 ? "neg" : "neu";
-  const valueColor =
-    tone === "pos"
-      ? "text-emerald-600"
-      : tone === "neg"
-        ? "text-rose-600"
-        : tone === "neu"
-          ? "text-slate-700"
-          : "text-slate-400";
-
-  const delta =
-    avg !== null && prev !== null ? avg - prev : null;
-  let TrendIcon = Minus;
-  let trendColor = "text-slate-400";
-  let trendText = "—";
-  if (delta !== null && Number.isFinite(delta)) {
-    if (delta > 0.05) {
-      TrendIcon = ArrowUpRight;
-      trendColor = "text-emerald-600";
-    } else if (delta < -0.05) {
-      TrendIcon = ArrowDownRight;
-      trendColor = "text-rose-600";
-    }
-    const sign = delta > 0 ? "+" : "";
-    trendText = `${sign}${delta.toFixed(2)}`;
-  }
-
-  return (
-    <div className="rounded-lg border border-slate-200 bg-white p-5">
-      <div className="text-xs font-medium uppercase tracking-wide text-slate-500">
-        Средняя тональность
-      </div>
-      <div className="mt-2 flex items-baseline justify-between gap-2">
-        <div className={`text-2xl font-semibold tabular-nums ${valueColor}`}>
-          {loading ? (
-            <span className="text-slate-300">…</span>
-          ) : (
-            formatSentimentScore(avg)
-          )}
-        </div>
-        <div
-          className={`inline-flex items-center gap-0.5 text-xs font-medium ${trendColor}`}
-          title="изменение к предыдущему периоду"
-        >
-          <TrendIcon className="h-3.5 w-3.5" />
-          {trendText}
-        </div>
-      </div>
-      <div className="mt-1 text-xs text-slate-400">
-        {avg === null
-          ? "нет проанализированных диалогов"
-          : pending > 0
-            ? `${fmtNumber(pending)} сообщений ещё анализируется`
-            : "среднее по клиентским сообщениям, шкала −1…+1"}
-      </div>
-    </div>
-  );
-}
 
 function Section({
   title,
+  action,
   children,
 }: {
   title: string;
+  action?: React.ReactNode;
   children: React.ReactNode;
 }) {
   return (
     <div>
-      <div className="mb-2 text-xs font-semibold uppercase tracking-wider text-slate-500">
-        {title}
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wider text-slate-500">
+          {title}
+        </div>
+        {action}
       </div>
       {children}
     </div>
@@ -667,7 +563,7 @@ function SLAList({
               {fmtMinutesWaiting(b.minutes_waiting)}
             </div>
             <Link
-              to={`/inbox?conv=${b.conversation_id}`}
+              to={`/inbox/${b.conversation_id}`}
               className="text-xs text-brand-600 hover:underline"
             >
               открыть

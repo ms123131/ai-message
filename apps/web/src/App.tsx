@@ -3,6 +3,7 @@ import { AppLayout } from "./components/AppLayout";
 import { ProtectedRoute } from "./components/ProtectedRoute";
 import { DashboardPage } from "./pages/DashboardPage";
 import { InboxPage } from "./pages/InboxPage";
+import { ConversationPage } from "./pages/ConversationPage";
 import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { Bitrix24Wizard } from "./pages/integrations/Bitrix24Wizard";
 import { TelegramUserWizard } from "./pages/integrations/TelegramUserWizard";
@@ -26,6 +27,7 @@ export default function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/inbox" element={<InboxPage />} />
+          <Route path="/inbox/:id" element={<ConversationPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route
             path="/integrations/bitrix24/new"
