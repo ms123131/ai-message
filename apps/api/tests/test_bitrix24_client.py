@@ -149,6 +149,54 @@ async def test_expired_token_triggers_refresh_and_retry(monkeypatch):
     assert integration.refresh_token == "new-refresh"
 
 
+async def test_refresh_persists_tokens_even_if_caller_rolls_back(monkeypatch):
+    """Регрессия: Bitrix ротирует refresh_token, поэтому новую пару нужно
+    зафиксировать сразу. Если после refresh вызывающий код упадёт и откатит
+    сессию (как poll_integration в except без commit), токены НЕ должны
+    потеряться — иначе в БД останется мёртвый старый refresh_token и интеграция
+    «слетает» с требованием переустановки.
+    """
+
+    async def fake_refresh(*, client_id, client_secret, refresh_token_value):
+        from app.integrations.bitrix24.oauth import TokenResponse
+
+        return TokenResponse(
+            access_token="rotated-access",
+            refresh_token="rotated-refresh",
+            expires_in=3600,
+            member_id="mem-1",
+            scope="crm",
+        )
+
+    monkeypatch.setattr(
+        "app.integrations.bitrix24.client.refresh_token", fake_refresh
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = parse_qs(request.content.decode())
+        if body["auth"] == ["tok-access"]:
+            return _err("expired_token")
+        return _ok({"ok": True})
+
+    integration = _make_integration()
+    transport = httpx.MockTransport(handler)
+    async with AsyncSessionLocal() as session:
+        session.add(integration)
+        await session.commit()
+        async with BitrixClient(integration, session, transport=transport) as client:
+            await client.call("user.current")
+        # Имитируем падение импорта после refresh: откатываем сессию.
+        await session.rollback()
+
+    # Свежей сессией читаем из БД: новая пара токенов обязана сохраниться.
+    async with AsyncSessionLocal() as session:
+        stored = await session.get(Integration, "intg_1")
+        assert stored is not None
+        assert stored.access_token == "rotated-access"
+        assert stored.refresh_token == "rotated-refresh"
+        assert stored.status == IntegrationStatus.connected
+
+
 async def test_proactive_refresh_when_token_about_to_expire(monkeypatch):
     called = {"n": 0}
 

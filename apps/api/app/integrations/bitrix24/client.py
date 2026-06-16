@@ -205,7 +205,15 @@ class BitrixClient:
         if tokens.member_id:
             i.member_id = tokens.member_id
         i.status = IntegrationStatus.connected
-        await self.session.flush()
+        # commit, а не flush — симметрично error-пути выше. Bitrix ротирует
+        # refresh_token: как только мы получили новую пару, СТАРЫЙ refresh_token
+        # на стороне портала аннулирован. Если новую пару не зафиксировать сразу,
+        # а лишь flush-нуть, то любое последующее исключение в импорте откатит
+        # сессию (как делает poll_integration в except без commit) — новые токены
+        # потеряются, в БД останется мёртвый старый refresh_token, и следующий
+        # refresh упадёт invalid_grant → интеграция «слетает» и требует
+        # переустановки. expire_on_commit=False, объект остаётся пригоден.
+        await self.session.commit()
 
     def _auth_params(self) -> dict[str, str]:
         return {"auth": self.integration.access_token or ""}
