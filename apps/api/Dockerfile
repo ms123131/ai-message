@@ -18,7 +18,8 @@ WORKDIR /app
 # UV_INDEX_URL ниже, чтобы тянуть зеркало.
 #
 # Cache mount на uv-store переживает между сборками, в финальный образ
-# не попадает. Холодная сборка тянет torch/sentence-transformers (~1.5 ГБ),
+# не попадает. torch берётся в CPU-сборке (+cpu, см. pyproject [tool.uv.sources])
+# — без CUDA-балласта nvidia-*; холодная сборка тянет torch/sentence-transformers,
 # повторные за секунды.
 COPY pyproject.toml ./
 # ENV UV_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/

@@ -41,14 +41,48 @@ def require_api_credentials() -> tuple[int, str]:
     return settings.telegram_api_id, settings.telegram_api_hash
 
 
+def _build_proxy() -> dict[str, Any] | None:
+    """Собрать proxy-конфиг для Telethon из настроек, либо None (прямое соединение).
+
+    Формат — dict для python-socks (Telethon его и использует асинхронно).
+    Нужен, когда egress окружения к сетям Telegram заблокирован: трафик MTProto
+    тогда идёт через SOCKS5 (в k8s — Xray-Deployment, см. infra/k8s/12-xray.yaml).
+    """
+    settings = get_settings()
+    kind = (settings.telegram_proxy_kind or "none").lower()
+    if kind in ("", "none"):
+        return None
+    if kind != "socks5":
+        raise TelegramNotConfigured(f"unsupported telegram_proxy_kind: {kind!r}")
+    if not settings.telegram_proxy_host:
+        raise TelegramNotConfigured(
+            "telegram_proxy_kind=socks5, но TELEGRAM_PROXY_HOST не задан"
+        )
+    proxy: dict[str, Any] = {
+        "proxy_type": "socks5",
+        "addr": settings.telegram_proxy_host,
+        "port": settings.telegram_proxy_port,
+        # rdns=True: DNS-резолв имён делает сам прокси (на нашей стороне
+        # Telegram-домены могут не резолвиться/быть отравлены).
+        "rdns": True,
+    }
+    if settings.telegram_proxy_user:
+        proxy["username"] = settings.telegram_proxy_user
+        proxy["password"] = settings.telegram_proxy_pass or ""
+    return proxy
+
+
 def make_client(string_session: str = ""):
     """Создать неподключённый TelegramClient (StringSession + dev/prod creds).
 
     Подключение делает вызывающий код через `await client.connect()`.
+    Если задан telegram_proxy_* — MTProto пойдёт через SOCKS5.
     """
     TelegramClient, StringSession, _ = _require_telethon()
     api_id, api_hash = require_api_credentials()
-    return TelegramClient(StringSession(string_session), api_id, api_hash)
+    return TelegramClient(
+        StringSession(string_session), api_id, api_hash, proxy=_build_proxy()
+    )
 
 
 def session_password_needed_error() -> type[Exception]:

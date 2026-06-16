@@ -4,7 +4,10 @@ version = "0.0.1"
 description = "Backend для ai-message — анализ коммуникационных каналов"
 requires-python = ">=3.12"
 dependencies = [
-    "fastapi>=0.115.0",
+    # Верхняя граница: fastapi 0.137 ломает prometheus-fastapi-instrumentator
+    # (роуты include_router становятся `_IncludedRouter` без атрибута `.path`
+    # → AttributeError на каждом запросе, в т.ч. /health → 500). 0.136.3 рабочая.
+    "fastapi>=0.115.0,<0.137",
     "uvicorn[standard]>=0.32.0",
     "pydantic>=2.9.0",
     "pydantic-settings>=2.6.0",
@@ -12,7 +15,9 @@ dependencies = [
     "aiosqlite>=0.20.0",
     "asyncpg>=0.30.0",
     "alembic>=1.13.0",
-    "httpx>=0.27.0",
+    # [socks] => тянет socksio, нужен httpx для socks5:// прокси (LLM_PROXY_URL
+    # через Xray в обход геоблока egress; python-socks ниже — только для Telethon).
+    "httpx[socks]>=0.27.0",
     "python-multipart>=0.0.12",
     "argon2-cffi>=23.1.0",
     "pyjwt>=2.10.0",
@@ -25,10 +30,14 @@ dependencies = [
     "slowapi>=0.1.9",
     "natasha>=1.6.0",
     "pgvector>=0.3.6",
-    # sentence-transformers тянет torch (~700МБ) — образ заметно растёт,
-    # но воркер должен уметь считать эмбеддинги без отдельной сборки.
-    # При недоступности (`pip install` без сети) app/nlp/embeddings.py
-    # gracefully падает в null-режим, аналогично Natasha.
+    # torch указан явной зависимостью, чтобы привязать его к CPU-индексу
+    # PyTorch (см. [tool.uv.sources] ниже). Нода кластера CPU-only — CUDA-сборка
+    # тянула ~1.5 ГБ nvidia-* пакетов впустую и раздувала образ api до ~5-6 ГБ.
+    # CPU-колёса (`+cpu`) ужимают образ кратно и ускоряют pull/деплой.
+    "torch>=2.2.0",
+    # sentence-transformers тянет torch — воркер должен уметь считать
+    # эмбеддинги без отдельной сборки. При недоступности (`pip install` без
+    # сети) app/nlp/embeddings.py gracefully падает в null-режим, как Natasha.
     "sentence-transformers>=3.0.0",
     "structlog>=24.4.0",
     "prometheus-fastapi-instrumentator>=7.0.0",
@@ -36,6 +45,9 @@ dependencies = [
     # недоступен, /integrations/telegram-user/* отвечает 503; остальные
     # фичи API продолжают работать.
     "telethon>=1.36.0",
+    # SOCKS5-прокси для Telethon (MTProto через Xray, см. telegram_proxy_*).
+    # Telethon использует python-socks для асинхронного SOCKS.
+    "python-socks[asyncio]>=2.4.0",
 ]
 
 [project.optional-dependencies]
@@ -47,6 +59,17 @@ dev = [
     "mypy>=1.13.0",
     "fakeredis>=2.26.0",
 ]
+
+[tool.uv.sources]
+# torch берём из CPU-индекса PyTorch на всех платформах: нода CPU-only,
+# CUDA-сборка не нужна и только раздувает образ. explicit-индекс ниже
+# используется ТОЛЬКО для torch — остальное резолвится с PyPI.
+torch = [{ index = "pytorch-cpu" }]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
 
 [build-system]
 requires = ["hatchling"]

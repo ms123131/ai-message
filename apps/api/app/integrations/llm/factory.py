@@ -32,6 +32,7 @@ def _build_provider(
     model: str | None,
     api_key: str | None,
     base_url: str | None,
+    proxy: str | None = None,
 ) -> LLMProvider:
     provider = (provider or "null").lower()
 
@@ -56,6 +57,7 @@ def _build_provider(
             base_url=base_url or PRESETS[provider],
             default_model=model,
             provider_name=provider,
+            proxy=proxy,
         )
 
     # Универсальный «своя openai-compat установка» (VseGPT, vLLM, прокси).
@@ -71,6 +73,7 @@ def _build_provider(
             base_url=base_url,
             default_model=model,
             provider_name="openai_compat",
+            proxy=proxy,
         )
 
     raise LLMError(f"Неизвестный LLM-провайдер: {provider!r}")
@@ -88,6 +91,7 @@ def get_llm(kind: LLMKind = "fast") -> LLMProvider:
             model=settings.llm_fast_model,
             api_key=settings.llm_fast_api_key,
             base_url=settings.llm_fast_base_url,
+            proxy=settings.llm_proxy_url,
         )
     elif kind == "smart":
         provider = _build_provider(
@@ -95,6 +99,7 @@ def get_llm(kind: LLMKind = "fast") -> LLMProvider:
             model=settings.llm_smart_model,
             api_key=settings.llm_smart_api_key,
             base_url=settings.llm_smart_base_url,
+            proxy=settings.llm_proxy_url,
         )
     else:  # pragma: no cover — typing-проверка ловит раньше
         raise LLMError(f"Неизвестный LLMKind: {kind!r}")

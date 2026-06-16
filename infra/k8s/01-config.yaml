@@ -25,17 +25,27 @@ data:
   # client_secret — в Secret.
   BITRIX24_APP_CLIENT_ID: "local.6a09ef866cbe83.16916660"
 
-  # LLM-провайдеры (Groq). Модели/базовые URL несекретные; API-ключи — в Secret.
-  LLM_FAST_PROVIDER: "Groq"
+  # LLM-провайдеры: Groq (бесплатный tier). Egress кластера к Groq геоблокирован
+  # в РФ (403/timeout), поэтому вызовы идут через SOCKS5 Xray-прокси — см.
+  # LLM_PROXY_URL в Secret (тот же Xray, что и Telegram, 12-xray.yaml).
+  # provider=groq => фабрика берёт пресет base_url api.groq.com/openai/v1.
+  # Cloud.ru FM/GigaChat — платные (HTTP 402 без баланса), оставлены про запас.
+  LLM_FAST_PROVIDER: "groq"
   LLM_FAST_MODEL: "llama-3.1-8b-instant"
-  LLM_FAST_BASE_URL: ""
-  LLM_SMART_PROVIDER: "Groq"
+  LLM_SMART_PROVIDER: "groq"
   LLM_SMART_MODEL: "llama-3.1-8b-instant"
-  LLM_SMART_BASE_URL: ""
 
   # Personal Telegram (MTProto). api_id — числовой идентификатор приложения
   # Telegram (не секрет); api_hash — в Secret.
   TELEGRAM_API_ID: "30790788"
+
+  # Egress кластера к сетям Telegram заблокирован (RU-фильтр), поэтому MTProto
+  # идёт через SOCKS5 Xray-прокси (Service xray, см. infra/k8s/12-xray.yaml).
+  # Пароль SOCKS — в Secret (TELEGRAM_PROXY_PASS).
+  TELEGRAM_PROXY_KIND: "socks5"
+  TELEGRAM_PROXY_HOST: "xray"
+  TELEGRAM_PROXY_PORT: "1080"
+  TELEGRAM_PROXY_USER: "tg"
 
   # Параметры опроса Bitrix24 воркером.
   BITRIX24_POLL_INTERVAL_SEC: "30"

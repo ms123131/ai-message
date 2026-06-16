@@ -79,6 +79,10 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # CPU-only torch отдельным шагом: plain pip не читает [tool.uv.sources]
+          # из pyproject и иначе тянул бы CUDA-сборку (~2 ГБ) на linux-runner.
+          # Ставится до пакета — `pip install -e .` видит torch уже удовлетворённым.
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
           pip install -e ".[dev]"
 
       - name: Lint (ruff)

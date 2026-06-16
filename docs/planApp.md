@@ -173,10 +173,14 @@ B10. 🔴 **RAG-ассистент по базе диалогов** — чат �
 
 ### Трек D — Инфраструктура Kubernetes
 
-D1. 🟢 **CPU-only torch** — `torch+cpu` индекс в pyproject; образ api ужмётся
-    с ~5-6 ГБ кратно (нода CPU-only, CUDA-сборка тянется зря). Ускорит pull/деплой.
-D2. 🟡 **CI/CD в k8s** — GitHub Actions: на merge в `main` собрать образ (Kaniko/
-    buildx + push в реестр) и `kubectl set image` / Argo CD (GitOps).
+D1. ✅ **CPU-only torch** — `torch` привязан к индексу `download.pytorch.org/whl/cpu`
+    через `[tool.uv.sources]` в `apps/api/pyproject.toml`. Резолвится `torch==…+cpu`,
+    nvidia-* CUDA-пакеты ушли (0 шт.) → образ api ужимается кратно. CI ставит
+    CPU-torch отдельным шагом (plain pip не читает `[tool.uv.sources]`).
+D2. ✅ **CI/CD в k8s** — `deploy.yml`: на push в `main` buildx собирает api+web на
+    GitHub-runner (после D1 образ влезает), пушит `:<sha>`+`:latest` в реестр,
+    затем `kubectl set image` + `rollout status` (push-модель, без Argo). Секреты
+    `REGISTRY_USERNAME/PASSWORD` + `KUBECONFIG_B64`, см. `infra/k8s/README.md §5`.
 D3. 🟡 **Бэкапы Postgres** — CronJob `pg_dump` → S3 Cloud.ru (помним правило:
     [[s3-backup-local-first]] — сначала локально, потом в S3), retention + проверка
     восстановления.

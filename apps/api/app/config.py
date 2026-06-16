@@ -79,6 +79,12 @@ class Settings(BaseSettings):
     llm_smart_api_key: str | None = Field(default=None)
     llm_smart_base_url: str | None = Field(default=None)
 
+    # Прокси для LLM-вызовов (общий для fast и smart). Нужен, когда egress
+    # кластера геоблокирует провайдера (Groq фильтрует RU-IP → 403/timeout).
+    # Формат httpx: socks5://user:pass@host:port (тот же Xray, что и Telegram).
+    # Пусто => прямое соединение.
+    llm_proxy_url: str | None = Field(default=None)
+
     # Redis (брокер задач для arq-воркера). По умолчанию указывает на
     # compose-сервис `redis`. Для локального dev без docker — `redis://localhost:6379/0`.
     # В тестах подменяется на fakeredis через monkeypatch фабрики пула.
@@ -167,6 +173,17 @@ class Settings(BaseSettings):
     # но Telethon-объект может пересоздавать его через qr.recreate(); TTL
     # ограничивает суммарное время попыток.
     telegram_qr_ttl_sec: int = 300
+
+    # Прокси для Telethon (MTProto). Нужен, когда egress окружения к сетям
+    # Telegram (149.154.0.0/16, 91.108.0.0/16) заблокирован (типично для RU):
+    # MTProto тогда идёт через SOCKS5. В k8s SOCKS5 поднимает отдельный
+    # Xray-Deployment (infra/k8s/12-xray.yaml) с VLESS-аплинком наружу.
+    # Пусто (kind=none) — подключаемся напрямую.
+    telegram_proxy_kind: str = "none"  # none | socks5
+    telegram_proxy_host: str | None = Field(default=None)
+    telegram_proxy_port: int = 1080
+    telegram_proxy_user: str | None = Field(default=None)
+    telegram_proxy_pass: str | None = Field(default=None)
 
     # --- Транзакционная почта (SMTP) ---
     # Отправка писем подтверждения email и сброса пароля. Транспорт —

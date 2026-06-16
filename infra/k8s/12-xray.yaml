@@ -1,0 +1,54 @@
+# Xray-прокси: SOCKS5-выход для Telethon (personal Telegram) в обход
+# egress-фильтра кластера на сети Telegram. Конфиг (с VLESS-нодой и UUID)
+# монтируется из секрета xray-config (создаётся kubectl, НЕ в git).
+# Образ собран из официального XTLS/Xray-core (infra/xray/Dockerfile).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: xray
+  namespace: ai-message
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: xray }
+  strategy: { type: Recreate }
+  template:
+    metadata:
+      labels: { app: xray }
+    spec:
+      imagePullSecrets:
+        - name: registry-cred
+      containers:
+        - name: xray
+          image: ai-mesaas.cr.cloud.ru/xray:latest
+          ports:
+            - { name: socks, containerPort: 1080 }
+          volumeMounts:
+            - { name: config, mountPath: /etc/xray, readOnly: true }
+          resources:
+            requests: { cpu: 25m, memory: 32Mi }
+            limits: { memory: 128Mi }
+          readinessProbe:
+            tcpSocket: { port: 1080 }
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            tcpSocket: { port: 1080 }
+            initialDelaySeconds: 10
+            periodSeconds: 30
+      volumes:
+        - name: config
+          secret:
+            secretName: xray-config
+            items:
+              - { key: config.json, path: config.json }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: xray
+  namespace: ai-message
+spec:
+  selector: { app: xray }
+  ports:
+    - { name: socks, port: 1080, targetPort: 1080 }

@@ -43,6 +43,7 @@ class OpenAICompatProvider(LLMProvider):
         base_url: str,
         default_model: str | None = None,
         provider_name: str = "openai_compat",
+        proxy: str | None = None,
     ) -> None:
         if not api_key:
             raise LLMError(f"{provider_name}: API key is empty")
@@ -53,7 +54,13 @@ class OpenAICompatProvider(LLMProvider):
         if default_model:
             self.default_model = default_model
         self.name = provider_name
-        self._client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
+        # proxy задаётся, когда egress кластера геоблокирует провайдера (Groq и
+        # т.п. фильтруют RU-IP). Тот же SOCKS5 Xray, что и для Telegram — см.
+        # LLM_PROXY_URL / telegram_proxy_*. None => прямое соединение.
+        self._client = httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0),
+            proxy=proxy or None,
+        )
 
     async def chat(
         self,

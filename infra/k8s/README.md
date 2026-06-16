@@ -98,3 +98,35 @@ curl -sI https://app.77ais.ru/api/v1/health     # 200 OK
   `https://app.77ais.ru` (`WEBHOOK_BASE_URL` в `01-config.yaml`).
 - **Ротация секретов:** правьте `02-secret.yaml`, `kubectl apply`, затем
   `kubectl -n ai-message rollout restart deploy/api deploy/worker`.
+
+## 5. CI/CD (автодеплой на merge в main)
+
+Workflow `.github/workflows/deploy.yml` на каждый push в `main` (и по кнопке
+`workflow_dispatch`) собирает образы api и web на GitHub-hosted runner через
+buildx, пушит их в реестр с тегами `:<sha>` и `:latest`, затем
+`kubectl set image` + `rollout status` по deployments `api`/`worker`/`web`.
+Деплой идёт по тегу `:<sha>` — иммутабельно и откатываемо.
+
+> Ручная сборка через Kaniko в кластере (`infra/scripts/kbuild.sh`) остаётся как
+> fallback на случай недоступности GitHub Actions или нужды собрать с локального
+> контекста.
+
+**Секреты репозитория** (GitHub → Settings → Secrets and variables → Actions):
+
+| Секрет | Что это | Как получить |
+|---|---|---|
+| `REGISTRY_USERNAME` | логин сервис-аккаунта Cloud.ru с правом push в реестр | key_id сервис-аккаунта (тот, чьим ключом создан `kaniko-reg`) |
+| `REGISTRY_PASSWORD` | секрет этого ключа | секрет сервис-аккаунта |
+| `KUBECONFIG_B64` | kubeconfig кластера в base64 | `base64 -w0 ~/.kube/config` |
+
+Логин/пароль реестра можно сверить с уже рабочим `.dockerconfigjson`:
+
+```bash
+kubectl -n ai-message get secret kaniko-reg \
+  -o jsonpath='{.data.\.dockerconfigjson}' | base64 -d | jq .
+```
+
+> ⚠️ `KUBECONFIG_B64` даёт CI полный доступ к кластеру — храните только как
+> GitHub Secret, не коммитьте. Для прод-контура позже стоит выпустить
+> отдельный ServiceAccount с RBAC, ограниченным namespace `ai-message`
+> (см. `docs/planApp.md`, трек D — D2/D10).

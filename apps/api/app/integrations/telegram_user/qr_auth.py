@@ -114,11 +114,20 @@ async def poll_qr_session(integration_id: str) -> dict[str, Any]:
             ctx.state = "requires_password"
             return {"state": "requires_password"}
         except TimeoutError:
-            # токен мог истечь — пересоздаём, отдаём свежий url
+            # Токен мог истечь — пересоздаём, отдаём свежий url. НО есть гонка
+            # Telethon: если скан случился ровно в окно recreate, запрос
+            # ExportLoginToken возвращает LoginTokenSuccess (логин принят), а
+            # recreate() падает на `self.token = resp.token` — у LoginTokenSuccess
+            # нет атрибута token (AttributeError). В этом случае вход фактически
+            # завершён — проверяем авторизацию и финализируем.
             try:
                 await ctx.qr.recreate()
-            except Exception:  # noqa: S110, BLE001 — recreate best-effort
-                pass
+            except Exception:  # noqa: BLE001 — recreate best-effort + гонка успеха
+                user = await ctx.client.get_me()
+                if user is not None:
+                    await _finalize_session(ctx, user)
+                    return _connected_payload(ctx)
+                # действительно не вышло — следующий poll повторит со старым url
             return {
                 "state": "waiting",
                 "qr_url": ctx.qr.url,
