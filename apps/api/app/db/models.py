@@ -43,6 +43,10 @@ class Tenant(Base):
     trial_ends_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+    # Профиль бизнеса для AI-ассистента (сфера, продукты, tone of voice,
+    # политики). Подмешивается в system-промпт «спроси свою переписку».
+    # NULL = не заполнен — ассистент работает без бизнес-контекста.
+    ai_business_profile: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
@@ -873,6 +877,91 @@ class AuditLog(Base):
     __table_args__ = (
         Index("ix_audit_logs_tenant_created", "tenant_id", "created_at"),
         Index("ix_audit_logs_action_created", "action", "created_at"),
+    )
+
+
+class AiMessageRole(str, Enum):
+    user = "user"
+    assistant = "assistant"
+
+
+class AiThread(Base):
+    """Тред диалога пользователя с AI-ассистентом «спроси свою переписку».
+
+    Привязан к tenant'у (изоляция данных) и к создавшему пользователю.
+    Реплики хранятся в `AiMessage`.
+    """
+
+    __tablename__ = "ai_threads"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    tenant_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("tenants.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    # Заголовок треда — автогенерируется из первого вопроса (обрезка).
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    messages: Mapped[list["AiMessage"]] = relationship(
+        back_populates="thread",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+        order_by="AiMessage.created_at",
+    )
+
+    __table_args__ = (
+        Index("ix_ai_threads_tenant_updated", "tenant_id", "updated_at"),
+    )
+
+
+class AiMessage(Base):
+    """Реплика в треде ассистента.
+
+    У assistant-реплик `sources` хранит ссылки на диалоги-источники
+    (список `{conversation_id, title, similarity}`) для отображения цитат,
+    а `model`/`tokens_in`/`tokens_out` — для логов и будущего учёта расходов.
+    """
+
+    __tablename__ = "ai_messages"
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    thread_id: Mapped[str] = mapped_column(
+        String(64),
+        ForeignKey("ai_threads.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    role: Mapped[AiMessageRole] = mapped_column(
+        SAEnum(AiMessageRole, name="ai_message_role"),
+        nullable=False,
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    sources: Mapped[list[dict[str, Any]] | None] = mapped_column(SAJSON)
+    model: Mapped[str | None] = mapped_column(String(100))
+    tokens_in: Mapped[int | None] = mapped_column(Integer)
+    tokens_out: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    thread: Mapped["AiThread"] = relationship(back_populates="messages")
+
+    __table_args__ = (
+        Index("ix_ai_messages_thread_created", "thread_id", "created_at"),
     )
 
 

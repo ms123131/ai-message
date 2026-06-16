@@ -85,6 +85,16 @@ class Settings(BaseSettings):
     # Пусто => прямое соединение.
     llm_proxy_url: str | None = Field(default=None)
 
+    # AI-ассистент «спроси свою переписку» (planApp.md B10). Все вызовы идут
+    # на smart-LLM; если llm_smart_provider=null — endpoint отвечает 503.
+    # retrieval_k — сколько сообщений тянем vector-поиском, max_convs — до
+    # скольких диалогов их группируем, max_context_chars — кэп контекста,
+    # history_turns — сколько прошлых реплик треда кладём в промпт.
+    ai_assistant_retrieval_k: int = 40
+    ai_assistant_max_convs: int = 8
+    ai_assistant_max_context_chars: int = 12000
+    ai_assistant_history_turns: int = 6
+
     # Redis (брокер задач для arq-воркера). По умолчанию указывает на
     # compose-сервис `redis`. Для локального dev без docker — `redis://localhost:6379/0`.
     # В тестах подменяется на fakeredis через monkeypatch фабрики пула.

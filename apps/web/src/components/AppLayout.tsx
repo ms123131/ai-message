@@ -6,6 +6,7 @@ import {
   SlidersHorizontal,
   CircleUserRound,
   LogOut,
+  Sparkles,
 } from "lucide-react";
 import { BrandMark } from "./icons/BrandMark";
 import { cn } from "../lib/cn";
@@ -14,6 +15,7 @@ import { useAuth } from "../lib/auth";
 const nav = [
   { to: "/dashboard", label: "Дашборд", icon: LayoutDashboard },
   { to: "/inbox", label: "Диалоги", icon: Inbox },
+  { to: "/assistant", label: "AI-ассистент", icon: Sparkles },
   { to: "/integrations", label: "Интеграции", icon: Plug },
   { to: "/settings", label: "Настройки", icon: SlidersHorizontal },
 ];

@@ -1,20 +1,22 @@
 import { useSearchParams } from "react-router-dom";
-import { Building2, CreditCard, UserCog } from "lucide-react";
+import { Building2, CreditCard, UserCog, Sparkles } from "lucide-react";
 import { PageHeader } from "../components/PageHeader";
 import { Tabs, type TabItem } from "../components/ui/Tabs";
 import { CompanyTab } from "./settings/CompanyTab";
 import { BillingTab } from "./settings/BillingTab";
 import { ProfileTab } from "./settings/ProfileTab";
+import { AiTab } from "./settings/AiTab";
 
-type TabId = "company" | "billing" | "profile";
+type TabId = "company" | "billing" | "profile" | "ai";
 
 const TABS: ReadonlyArray<TabItem<TabId>> = [
   { id: "company", label: "Компания", icon: Building2 },
   { id: "billing", label: "Оплата", icon: CreditCard },
   { id: "profile", label: "Информация", icon: UserCog },
+  { id: "ai", label: "AI-ассистент", icon: Sparkles },
 ];
 
-const TAB_IDS: readonly TabId[] = ["company", "billing", "profile"];
+const TAB_IDS: readonly TabId[] = ["company", "billing", "profile", "ai"];
 
 function isTab(v: string | null): v is TabId {
   return v !== null && (TAB_IDS as readonly string[]).includes(v);
@@ -40,6 +42,7 @@ export function SettingsPage() {
         {tab === "company" && <CompanyTab />}
         {tab === "billing" && <BillingTab />}
         {tab === "profile" && <ProfileTab />}
+        {tab === "ai" && <AiTab />}
       </div>
     </>
   );

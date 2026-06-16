@@ -1,6 +1,7 @@
 from fastapi import APIRouter
 
 from app.api.v1 import (
+    ai_assistant,
     auth,
     conversations,
     dashboard,
@@ -26,3 +27,4 @@ api_router.include_router(settings.router)
 api_router.include_router(webhooks.router)
 api_router.include_router(install.router)
 api_router.include_router(system.router)
+api_router.include_router(ai_assistant.router)

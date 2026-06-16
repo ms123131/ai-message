@@ -838,4 +838,62 @@ export const api = {
 
   getEntitiesTop: (f: DashboardFilters & { limit?: number } = {}) =>
     request<EntitiesResponse>(`/api/v1/dashboard/entities${qs(f)}`),
+
+  // --- AI-ассистент «спроси свою переписку» ---
+  aiChat: (body: { thread_id?: string; message: string }) =>
+    request<AiChatResponse>("/api/v1/ai/chat", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  aiListThreads: () => request<AiThread[]>("/api/v1/ai/threads"),
+
+  aiGetThread: (threadId: string) =>
+    request<AiThreadDetail>(`/api/v1/ai/threads/${threadId}`),
+
+  aiDeleteThread: (threadId: string) =>
+    request<void>(`/api/v1/ai/threads/${threadId}`, { method: "DELETE" }),
+
+  getBusinessProfile: () =>
+    request<{ business_profile: string | null }>("/api/v1/ai/business-profile"),
+
+  saveBusinessProfile: (business_profile: string | null) =>
+    request<{ business_profile: string | null }>("/api/v1/ai/business-profile", {
+      method: "PUT",
+      body: JSON.stringify({ business_profile }),
+    }),
 };
+
+export interface AiSource {
+  conversation_id: string;
+  title: string;
+  similarity: number;
+}
+
+export interface AiChatResponse {
+  thread_id: string;
+  answer: string;
+  sources: AiSource[];
+  degraded: boolean;
+}
+
+export interface AiThread {
+  id: string;
+  title: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AiThreadMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  sources: AiSource[] | null;
+  created_at: string;
+}
+
+export interface AiThreadDetail {
+  id: string;
+  title: string;
+  messages: AiThreadMessage[];
+}

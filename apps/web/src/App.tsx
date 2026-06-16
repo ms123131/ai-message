@@ -4,6 +4,7 @@ import { ProtectedRoute } from "./components/ProtectedRoute";
 import { DashboardPage } from "./pages/DashboardPage";
 import { InboxPage } from "./pages/InboxPage";
 import { ConversationPage } from "./pages/ConversationPage";
+import { AssistantPage } from "./pages/AssistantPage";
 import { IntegrationsPage } from "./pages/IntegrationsPage";
 import { Bitrix24Wizard } from "./pages/integrations/Bitrix24Wizard";
 import { TelegramUserWizard } from "./pages/integrations/TelegramUserWizard";
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="/dashboard" element={<DashboardPage />} />
           <Route path="/inbox" element={<InboxPage />} />
           <Route path="/inbox/:id" element={<ConversationPage />} />
+          <Route path="/assistant" element={<AssistantPage />} />
           <Route path="/integrations" element={<IntegrationsPage />} />
           <Route
             path="/integrations/bitrix24/new"
